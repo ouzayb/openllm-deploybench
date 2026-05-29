@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openllm-deploybench"
+version = "0.1.0"
+description = "Benchmark suite for open-weight LLM deployment on NVIDIA GPUs"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = { text = "MIT" }
+authors = [{ name = "OpenLLM DeployBench" }]
+dependencies = [
+    "torch",
+    "vllm",
+    "transformers",
+    "accelerate",
+    "datasets",
+    "huggingface_hub",
+    "pandas",
+    "numpy",
+    "pydantic>=2.0",
+    "pyyaml",
+    "psutil",
+    "pynvml",
+    "rich",
+    "typer>=0.9",
+    "matplotlib",
+    "requests",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+deploybench = "deploybench.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+deploybench = ["py.typed"]

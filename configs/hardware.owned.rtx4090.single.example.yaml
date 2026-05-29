@@ -1,0 +1,16 @@
+machine_id: "owned_rtx4090_1x_01"
+machine_label: "Owned RTX 4090 Single-GPU"
+location_type: "consumer_local"
+provider: "local"
+hourly_price_usd: null
+notes: "Ubuntu local machine with one RTX 4090 (24GB)"
+
+expected_gpus:
+  - name_contains: "4090"
+    count: 1
+
+tags:
+  - rtx4090
+  - single_gpu
+  - consumer
+  - owned

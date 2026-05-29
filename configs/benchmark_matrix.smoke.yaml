@@ -1,0 +1,46 @@
+# Minimal matrix for first validation on any GPU.
+benchmark:
+  name: "openllm_deploybench_smoke"
+  output_format: "jsonl"
+
+runtime:
+  engine: "vllm"
+  mode: "online"
+  tensor_parallel_size: "auto"
+  gpu_memory_utilization: 0.90
+  enforce_eager: false
+  seed: 42
+  port: 8000
+  host: "127.0.0.1"
+  server_startup_timeout_sec: 600
+
+models:
+  - model_id: "qwen2_5_7b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+
+workloads:
+  - id: "chat_512_256"
+    type: "synthetic"
+    template: "chat"
+    prompt_tokens: 512
+    output_tokens: 256
+    num_prompts: 8
+    concurrency:
+      - 1
+
+long_context:
+  enabled: true
+  context_lengths:
+    - 8192
+  needle_positions:
+    - 0.50
+  num_trials_per_setting: 2
+
+monitoring:
+  sample_interval_seconds: 0.5
+  log_gpu_power: true
+  log_gpu_memory: true
+  log_gpu_utilization: true

@@ -1,0 +1,16 @@
+machine_id: "owned_h200_1x_01"
+machine_label: "Owned H200 Single-GPU"
+location_type: "owned"
+provider: "local"
+hourly_price_usd: null
+notes: "Ubuntu Server or Desktop with one local/owned H200"
+
+expected_gpus:
+  - name_contains: "H200"
+    count: 1
+
+tags:
+  - h200
+  - single_gpu
+  - datacenter
+  - owned

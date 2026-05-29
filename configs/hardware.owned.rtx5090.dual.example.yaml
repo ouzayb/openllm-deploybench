@@ -1,0 +1,16 @@
+machine_id: "owned_rtx5090_2x_01"
+machine_label: "Owned RTX 5090 Dual-GPU"
+location_type: "consumer_local"
+provider: "local"
+hourly_price_usd: null
+notes: "Ubuntu local machine with two RTX 5090 GPUs"
+
+expected_gpus:
+  - name_contains: "5090"
+    count: 2
+
+tags:
+  - rtx5090
+  - dual_gpu
+  - consumer
+  - owned

@@ -1,0 +1,16 @@
+machine_id: "owned_h200_2x_01"
+machine_label: "Owned H200 Dual-GPU"
+location_type: "owned"
+provider: "local"
+hourly_price_usd: null
+notes: "Ubuntu Server with two local/owned H200 GPUs"
+
+expected_gpus:
+  - name_contains: "H200"
+    count: 2
+
+tags:
+  - h200
+  - dual_gpu
+  - datacenter
+  - owned

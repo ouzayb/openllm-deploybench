@@ -1,0 +1,16 @@
+machine_id: "cloud_rtx4090_1x_01"
+machine_label: "Cloud RTX 4090 Single-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 0.59
+notes: "Cloud-rented single RTX 4090. Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "4090"
+    count: 1
+
+tags:
+  - rtx4090
+  - single_gpu
+  - cloud
+  - rented

@@ -1,0 +1,16 @@
+machine_id: "cloud_rtx4090_2x_01"
+machine_label: "Cloud RTX 4090 Dual-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 1.18
+notes: "Cloud-rented dual RTX 4090. Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "4090"
+    count: 2
+
+tags:
+  - rtx4090
+  - dual_gpu
+  - cloud
+  - rented

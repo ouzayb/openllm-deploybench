@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Local configs (copy from examples)
+configs/hardware.local.yaml
+configs/models.yaml
+configs/benchmark_matrix.yaml
+
+# Results and reports (keep structure)
+results/*
+!results/.gitkeep
+reports/*
+!reports/.gitkeep
+!reports/figures/
+
+# Generated workloads
+workloads/synthetic/generated/*.jsonl
+
+# Logs and caches
+*.log
+.cache/
+.huggingface/
+
+# IDE
+.idea/
+.vscode/
+*.swp

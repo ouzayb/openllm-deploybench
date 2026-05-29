@@ -1,0 +1,16 @@
+machine_id: "cloud_h200_1x_01"
+machine_label: "Cloud H200 Single-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 4.39
+notes: "Cloud-rented single H200 (e.g. RunPod, Lambda, CoreWeave). Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "H200"
+    count: 1
+
+tags:
+  - h200
+  - single_gpu
+  - cloud
+  - rented

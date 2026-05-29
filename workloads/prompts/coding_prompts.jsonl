@@ -1,0 +1,2 @@
+{"id": "code_001", "prompt": "Write a Python function that merges two sorted lists in O(n) time.", "metadata": {"workload_type": "coding"}}
+{"id": "code_002", "prompt": "Implement binary search on a sorted array with edge-case handling.", "metadata": {"workload_type": "coding"}}

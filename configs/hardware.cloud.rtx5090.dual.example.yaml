@@ -1,0 +1,16 @@
+machine_id: "cloud_rtx5090_2x_01"
+machine_label: "Cloud RTX 5090 Dual-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 2.40
+notes: "Cloud-rented dual RTX 5090. Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "5090"
+    count: 2
+
+tags:
+  - rtx5090
+  - dual_gpu
+  - cloud
+  - rented

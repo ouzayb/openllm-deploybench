@@ -1,0 +1,2 @@
+{"id": "rag_001", "prompt": "Document: OpenLLM DeployBench measures serving latency and throughput.\n\nQuestion: What does DeployBench measure?", "metadata": {"workload_type": "rag"}}
+{"id": "rag_002", "prompt": "Document: vLLM uses PagedAttention for efficient KV cache management.\n\nQuestion: What technique does vLLM use for KV cache?", "metadata": {"workload_type": "rag"}}

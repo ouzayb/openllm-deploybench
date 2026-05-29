@@ -1,0 +1,17 @@
+torch
+vllm
+transformers
+accelerate
+datasets
+huggingface_hub
+pandas
+numpy
+pydantic>=2.0
+pyyaml
+psutil
+pynvml
+rich
+typer>=0.9
+matplotlib
+requests
+tqdm

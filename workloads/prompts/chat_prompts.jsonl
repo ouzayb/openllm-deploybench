@@ -1,0 +1,2 @@
+{"id": "chat_001", "prompt": "User: What are three benefits of open-weight LLMs for on-prem deployment?\nAssistant:", "metadata": {"workload_type": "chat"}}
+{"id": "chat_002", "prompt": "User: Explain tensor parallelism in one paragraph.\nAssistant:", "metadata": {"workload_type": "chat"}}

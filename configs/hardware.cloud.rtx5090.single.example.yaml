@@ -1,0 +1,16 @@
+machine_id: "cloud_rtx5090_1x_01"
+machine_label: "Cloud RTX 5090 Single-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 1.20
+notes: "Cloud-rented single RTX 5090. Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "5090"
+    count: 1
+
+tags:
+  - rtx5090
+  - single_gpu
+  - cloud
+  - rented

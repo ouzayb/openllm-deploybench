@@ -1,0 +1,16 @@
+machine_id: "cloud_h200_2x_01"
+machine_label: "Cloud H200 Dual-GPU"
+location_type: "rented_cloud"
+provider: "runpod"
+hourly_price_usd: 8.78
+notes: "Cloud-rented dual H200. Update provider and hourly_price_usd to match your invoice."
+
+expected_gpus:
+  - name_contains: "H200"
+    count: 2
+
+tags:
+  - h200
+  - dual_gpu
+  - cloud
+  - rented

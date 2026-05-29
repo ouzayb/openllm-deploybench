@@ -1,0 +1,16 @@
+# Reference metadata for cloud providers (informational only).
+providers:
+  runpod:
+    notes: "GPU cloud rentals; verify H200 SKU and PCIe topology."
+    typical_billing: hourly
+  lambda:
+    notes: "On-demand and reserved GPU instances."
+    typical_billing: hourly
+  coreweave:
+    notes: "Datacenter GPU cloud."
+    typical_billing: hourly
+  vast:
+    notes: "Peer marketplace; verify GPU model and driver."
+    typical_billing: hourly
+  other:
+    notes: "Custom provider; set provider and hourly_price_usd in hardware.local.yaml"

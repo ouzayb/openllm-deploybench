@@ -1,0 +1,33 @@
+models:
+  - id: "qwen2_5_7b_instruct"
+    hf_id: "Qwen/Qwen2.5-7B-Instruct"
+    size_class: "7B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "Small model baseline"
+
+  - id: "qwen2_5_14b_instruct"
+    hf_id: "Qwen/Qwen2.5-14B-Instruct"
+    size_class: "14B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+
+  - id: "qwen2_5_32b_instruct"
+    hf_id: "Qwen/Qwen2.5-32B-Instruct"
+    size_class: "32B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+
+  - id: "llama_3_1_8b_instruct"
+    hf_id: "meta-llama/Llama-3.1-8B-Instruct"
+    size_class: "8B"
+    default_dtype: "bfloat16"
+    trust_remote_code: false
+    requires_hf_token: true
+
+  - id: "llama_3_1_70b_instruct"
+    hf_id: "meta-llama/Llama-3.1-70B-Instruct"
+    size_class: "70B"
+    default_dtype: "bfloat16"
+    trust_remote_code: false
+    requires_hf_token: true

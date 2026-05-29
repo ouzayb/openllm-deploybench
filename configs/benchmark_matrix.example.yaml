@@ -1,0 +1,112 @@
+benchmark:
+  name: "openllm_deploybench_default"
+  output_format: "jsonl"
+
+runtime:
+  engine: "vllm"
+  mode: "online"  # online | offline
+  tensor_parallel_size: "auto"
+  gpu_memory_utilization: 0.90
+  enforce_eager: false
+  seed: 42
+  port: 8000
+  host: "127.0.0.1"
+  server_startup_timeout_sec: 600
+
+models:
+  - model_id: "qwen2_5_7b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+      - 32768
+
+  - model_id: "qwen2_5_14b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+      - 32768
+
+  - model_id: "qwen2_5_32b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+      - 32768
+
+  - model_id: "llama_3_1_70b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+      - 32768
+      - 65536
+
+workloads:
+  - id: "chat_512_256"
+    type: "synthetic"
+    template: "chat"
+    prompt_tokens: 512
+    output_tokens: 256
+    num_prompts: 128
+    concurrency:
+      - 1
+      - 4
+      - 8
+      - 16
+
+  - id: "coding_2048_1024"
+    type: "synthetic"
+    template: "coding"
+    prompt_tokens: 2048
+    output_tokens: 1024
+    num_prompts: 64
+    concurrency:
+      - 1
+      - 4
+      - 8
+
+  - id: "rag_8192_512"
+    type: "synthetic"
+    template: "rag"
+    prompt_tokens: 8192
+    output_tokens: 512
+    num_prompts: 64
+    concurrency:
+      - 1
+      - 4
+      - 8
+
+  - id: "long_rag_32768_512"
+    type: "synthetic"
+    template: "rag"
+    prompt_tokens: 32768
+    output_tokens: 512
+    num_prompts: 32
+    concurrency:
+      - 1
+      - 2
+      - 4
+
+long_context:
+  enabled: true
+  context_lengths:
+    - 8192
+    - 16384
+    - 32768
+    - 65536
+    - 131072
+  needle_positions:
+    - 0.05
+    - 0.25
+    - 0.50
+    - 0.75
+    - 0.95
+  num_trials_per_setting: 5
+
+monitoring:
+  sample_interval_seconds: 0.5
+  log_gpu_power: true
+  log_gpu_memory: true
+  log_gpu_utilization: true

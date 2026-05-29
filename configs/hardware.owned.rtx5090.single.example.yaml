@@ -1,0 +1,16 @@
+machine_id: "owned_rtx5090_1x_01"
+machine_label: "Owned RTX 5090 Single-GPU"
+location_type: "consumer_local"
+provider: "local"
+hourly_price_usd: null
+notes: "Ubuntu local machine with one RTX 5090"
+
+expected_gpus:
+  - name_contains: "5090"
+    count: 1
+
+tags:
+  - rtx5090
+  - single_gpu
+  - consumer
+  - owned
