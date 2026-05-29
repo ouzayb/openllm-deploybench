@@ -22,7 +22,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml",
     "psutil",
-    "pynvml",
+    "nvidia-ml-py",
     "rich",
     "typer>=0.9",
     "matplotlib",

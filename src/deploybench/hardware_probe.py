@@ -49,17 +49,69 @@ def _run_command(cmd: list[str], timeout: int = 60) -> dict[str, Any]:
         return {"command": " ".join(cmd), "error": str(e)}
 
 
+def _parse_gpus_from_nvidia_smi_csv(stdout: str) -> list[dict[str, Any]]:
+    """Fallback GPU list when NVML Python bindings fail."""
+    gpus: list[dict[str, Any]] = []
+    for line in stdout.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            idx = int(parts[0])
+        except ValueError:
+            continue
+        name = parts[1]
+        uuid = parts[2] if len(parts) > 2 else ""
+        info: dict[str, Any] = {
+            "index": idx,
+            "name": name,
+            "uuid": uuid,
+            "source": "nvidia-smi",
+        }
+        if len(parts) > 3 and parts[3]:
+            try:
+                info["memory_total_mb"] = float(parts[3])
+            except ValueError:
+                pass
+        if len(parts) > 4 and parts[4]:
+            try:
+                info["power_draw_watts"] = float(parts[4])
+            except ValueError:
+                pass
+        if len(parts) > 5 and parts[5]:
+            try:
+                info["temperature_c"] = float(parts[5])
+            except ValueError:
+                pass
+        gpus.append(info)
+    return gpus
+
+
+def _parse_driver_from_smi(stdout: str) -> str | None:
+    m = re.search(r"Driver Version:\s*(\S+)", stdout)
+    return m.group(1) if m else None
+
+
 def _collect_pynvml_gpus() -> tuple[list[dict[str, Any]], str | None, str | None]:
+    from deploybench.nvml_helper import nvml_init, nvml_shutdown
+
     gpus: list[dict[str, Any]] = []
     driver_version: str | None = None
     cuda_version: str | None = None
+    nvml, init_err = nvml_init()
+    if nvml is None or init_err:
+        if init_err:
+            logger.warning("pynvml GPU collection failed: %s", init_err)
+        return gpus, driver_version, cuda_version
     try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        driver_version = pynvml.nvmlSystemGetDriverVersion()
+        driver_version = nvml.nvmlSystemGetDriverVersion()
+        if isinstance(driver_version, bytes):
+            driver_version = driver_version.decode("utf-8", errors="replace")
         try:
-            cuda_version = pynvml.nvmlSystemGetCudaDriverVersion_v2()
+            cuda_version = nvml.nvmlSystemGetCudaDriverVersion_v2()
             if isinstance(cuda_version, int):
                 major = cuda_version // 1000
                 minor = (cuda_version % 1000) // 10
@@ -67,58 +119,58 @@ def _collect_pynvml_gpus() -> tuple[list[dict[str, Any]], str | None, str | None
         except Exception:
             cuda_version = None
 
-        count = pynvml.nvmlDeviceGetCount()
+        count = nvml.nvmlDeviceGetCount()
         for i in range(count):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            name = pynvml.nvmlDeviceGetName(handle)
+            handle = nvml.nvmlDeviceGetHandleByIndex(i)
+            name = nvml.nvmlDeviceGetName(handle)
             if isinstance(name, bytes):
                 name = name.decode("utf-8", errors="replace")
-            uuid = pynvml.nvmlDeviceGetUUID(handle)
+            uuid = nvml.nvmlDeviceGetUUID(handle)
             if isinstance(uuid, bytes):
                 uuid = uuid.decode("utf-8", errors="replace")
-            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            mem = nvml.nvmlDeviceGetMemoryInfo(handle)
             info: dict[str, Any] = {
                 "index": i,
                 "name": name,
                 "uuid": uuid,
                 "memory_total_mb": mem.total / (1024 * 1024),
+                "source": "nvml",
             }
             try:
-                power_limit = pynvml.nvmlDeviceGetPowerManagementLimit(handle)
+                power_limit = nvml.nvmlDeviceGetPowerManagementLimit(handle)
                 info["power_limit_watts"] = power_limit / 1000.0
             except Exception:
                 pass
             try:
-                max_limit = pynvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)
+                max_limit = nvml.nvmlDeviceGetPowerManagementLimitConstraints(handle)
                 info["max_power_limit_watts"] = max_limit[1] / 1000.0
             except Exception:
                 pass
             try:
-                power = pynvml.nvmlDeviceGetPowerUsage(handle)
+                power = nvml.nvmlDeviceGetPowerUsage(handle)
                 info["power_draw_watts"] = power / 1000.0
             except Exception:
                 pass
             try:
-                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                temp = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
                 info["temperature_c"] = temp
             except Exception:
                 pass
             try:
-                pci = pynvml.nvmlDeviceGetPciInfo(handle)
+                pci = nvml.nvmlDeviceGetPciInfo(handle)
                 info["pci_bus"] = pci.busId.decode() if isinstance(pci.busId, bytes) else pci.busId
             except Exception:
                 pass
             try:
-                mig = pynvml.nvmlDeviceGetMigMode(handle)
+                mig = nvml.nvmlDeviceGetMigMode(handle)
                 info["mig_mode"] = mig
             except Exception:
                 pass
             gpus.append(info)
-        pynvml.nvmlShutdown()
-    except ImportError:
-        logger.warning("pynvml not installed")
+        nvml_shutdown()
     except Exception as e:
-        logger.warning("pynvml GPU collection failed: %s", e)
+        logger.warning("NVML GPU enumeration failed: %s", e)
+        nvml_shutdown()
     return gpus, driver_version, cuda_version
 
 
@@ -163,10 +215,33 @@ def probe_hardware(hardware_config: HardwareConfig | None = None) -> HardwarePro
         raw_outputs[name] = _run_command(cmd)
 
     gpus, driver_version, cuda_version = _collect_pynvml_gpus()
-    if cuda_version is None and "nvidia_smi" in raw_outputs:
+
+    smi_query = _run_command([
+        "nvidia-smi",
+        "--query-gpu=index,name,uuid,memory.total,power.draw,temperature.gpu",
+        "--format=csv,noheader,nounits",
+    ])
+    raw_outputs["nvidia_smi_query"] = smi_query
+
+    if not gpus and smi_query.get("returncode") == 0 and smi_query.get("stdout"):
+        gpus = _parse_gpus_from_nvidia_smi_csv(smi_query["stdout"])
+        logger.info("GPU list collected via nvidia-smi fallback (%d GPU(s))", len(gpus))
+
+    if "nvidia_smi" in raw_outputs:
         smi = raw_outputs["nvidia_smi"]
         if "stdout" in smi:
-            cuda_version = _parse_cuda_from_smi(smi["stdout"])
+            if cuda_version is None:
+                cuda_version = _parse_cuda_from_smi(smi["stdout"])
+            if driver_version is None:
+                driver_version = _parse_driver_from_smi(smi["stdout"])
+
+    if not gpus and "nvidia_smi" in raw_outputs:
+        smi_out = raw_outputs["nvidia_smi"].get("stdout", "")
+        if "NVML" in smi_out or "Driver/library version mismatch" in smi_out:
+            logger.warning(
+                "nvidia-smi reports driver/NVML issues. Try: sudo reboot, or reload "
+                "the NVIDIA kernel module after a driver update."
+            )
 
     ram = psutil.virtual_memory().total / (1024**3)
     versions = get_package_versions()

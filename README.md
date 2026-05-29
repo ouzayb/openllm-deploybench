@@ -44,9 +44,37 @@ All paths are under `configs/`. Cloud examples include placeholder `hourly_price
 ## Quick Start
 
 ```bash
-git clone <repo>
+git clone https://github.com/ouzayb/openllm-deploybench.git
 cd openllm-deploybench
+```
+
+**Install (required before `deploybench` works):**
+
+```bash
+# Linux
 bash scripts/install_ubuntu.sh
+source .venv/bin/activate
+
+# Windows (PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+```
+
+If you see `deploybench: command not found`, the venv is not active or `pip install -e .` was not run. Use either:
+
+```bash
+python -m deploybench probe-hardware --hardware-config configs/hardware.local.yaml --output results/hardware.json
+```
+
+or the script wrapper:
+
+```bash
+python scripts/run_hardware_probe.py --hardware-config configs/hardware.local.yaml --output results/hardware.json
+```
+
+```bash
+# Continue setup (Linux example)
 source .venv/bin/activate
 
 # Pick one of 12 hardware profiles (see configs/HARDWARE_PROFILES.md)
@@ -147,9 +175,54 @@ deploybench run-quantization \
 python scripts/run_all.py --hardware-config configs/hardware.local.yaml
 ```
 
+## Troubleshooting NVML / GPU detection
+
+### `NVML/RM version mismatch` or `found 0` GPUs
+
+This means the **NVIDIA kernel driver** and **user-space NVML library** are out of sync (common right after a driver upgrade without reboot).
+
+**Check:**
+```bash
+nvidia-smi
+```
+
+- If `nvidia-smi` works but the probe shows 0 GPUs, pull the latest code (we fall back to `nvidia-smi` CSV parsing).
+- If `nvidia-smi` also fails, fix the driver first:
+
+```bash
+# Typical fix: reboot after driver install
+sudo reboot
+
+# Or reload modules (Linux)
+sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null
+sudo modprobe nvidia
+nvidia-smi
+```
+
+**Python package:** prefer `nvidia-ml-py` over deprecated `pynvml`:
+```bash
+pip install nvidia-ml-py
+pip uninstall pynvml -y 2>/dev/null || true
+```
+
+### `hardware.local.yaml` expects H200 but machine has different GPUs
+
+Edit `configs/hardware.local.yaml` to match **your** GPUs, e.g.:
+```bash
+cp configs/hardware.owned.rtx4090.dual.example.yaml configs/hardware.local.yaml
+```
+
+## Troubleshooting `deploybench: command not found`
+
+1. `cd` into the repo root (the folder that contains `pyproject.toml`).
+2. Activate the virtualenv: `source .venv/bin/activate` (Linux) or `.\.venv\Scripts\Activate.ps1` (Windows).
+3. Install: `pip install -e .`
+4. Verify: `deploybench --help` or `python -m deploybench --help`
+5. Copy configs before probe: `cp configs/hardware.owned.rtx4090.single.example.yaml configs/hardware.local.yaml`
+
 ## Direct Script Execution
 
-Without installing the package:
+Without the `deploybench` command on PATH (still needs `pip install -r requirements.txt` or `pip install -e .` for dependencies):
 
 ```bash
 source .venv/bin/activate

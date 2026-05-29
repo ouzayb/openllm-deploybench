@@ -4,22 +4,14 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import TYPE_CHECKING
+from typing import Any
 
 from deploybench.metrics import summarize_gpu_samples
+from deploybench.nvml_helper import get_nvml, nvml_init, nvml_shutdown
 from deploybench.result_schema import GPUSample, GPUSampleSummary
 from deploybench.utils import utc_now_iso
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
-
-try:
-    import pynvml
-except ImportError:
-    pynvml = None  # type: ignore
 
 
 class GPUMonitor:
@@ -29,22 +21,19 @@ class GPUMonitor:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._nvml_initialized = False
+        self._nvml: Any = None
         self._warning: str | None = None
 
     def start(self) -> None:
         self._samples = []
         self._stop_event.clear()
-        if pynvml is None:
-            self._warning = "pynvml not available; GPU monitoring disabled"
+        nvml, err = nvml_init()
+        if nvml is None or err:
+            self._warning = err or "nvidia-ml-py not available; GPU monitoring disabled"
             logger.warning(self._warning)
             return
-        try:
-            pynvml.nvmlInit()
-            self._nvml_initialized = True
-        except Exception as e:
-            self._warning = f"pynvml init failed: {e}"
-            logger.warning(self._warning)
-            return
+        self._nvml = nvml
+        self._nvml_initialized = True
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
@@ -54,33 +43,35 @@ class GPUMonitor:
             self._stop_event.wait(self.sample_interval_seconds)
 
     def _take_sample(self) -> None:
-        if not self._nvml_initialized or pynvml is None:
+        if not self._nvml_initialized or self._nvml is None:
             return
+        nvml = self._nvml
         try:
-            count = pynvml.nvmlDeviceGetCount()
+            count = nvml.nvmlDeviceGetCount()
             for i in range(count):
-                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                handle = nvml.nvmlDeviceGetHandleByIndex(i)
+                mem = nvml.nvmlDeviceGetMemoryInfo(handle)
+                util = nvml.nvmlDeviceGetUtilizationRates(handle)
                 power: float | None = None
                 temp: float | None = None
                 sm_clock: float | None = None
                 mem_clock: float | None = None
+                nvml_error = getattr(nvml, "NVMLError", Exception)
                 try:
-                    power = float(pynvml.nvmlDeviceGetPowerUsage(handle)) / 1000.0
-                except pynvml.NVMLError:
+                    power = float(nvml.nvmlDeviceGetPowerUsage(handle)) / 1000.0
+                except nvml_error:
                     pass
                 try:
-                    temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
-                except pynvml.NVMLError:
+                    temp = float(nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU))
+                except nvml_error:
                     pass
                 try:
-                    sm_clock = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM))
-                except pynvml.NVMLError:
+                    sm_clock = float(nvml.nvmlDeviceGetClockInfo(handle, nvml.NVML_CLOCK_SM))
+                except nvml_error:
                     pass
                 try:
-                    mem_clock = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
-                except pynvml.NVMLError:
+                    mem_clock = float(nvml.nvmlDeviceGetClockInfo(handle, nvml.NVML_CLOCK_MEM))
+                except nvml_error:
                     pass
                 self._samples.append(
                     GPUSample(
@@ -103,11 +94,8 @@ class GPUMonitor:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
-        if self._nvml_initialized and pynvml is not None:
-            try:
-                pynvml.nvmlShutdown()
-            except Exception:
-                pass
+        if self._nvml_initialized:
+            nvml_shutdown()
             self._nvml_initialized = False
         return list(self._samples)
 
