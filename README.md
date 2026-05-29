@@ -38,7 +38,7 @@ All paths are under `configs/`. Cloud examples include placeholder `hourly_price
 - Ubuntu Desktop or Server (22.04+ recommended)
 - NVIDIA GPU + driver
 - CUDA-enabled Python environment
-- Python 3.10 or 3.11
+- Python 3.10, 3.11, or 3.12
 - SSH-friendly (no GUI required)
 
 ## Quick Start

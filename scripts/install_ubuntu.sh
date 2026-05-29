@@ -19,8 +19,8 @@ fi
 PYVER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo "Python version: ${PYVER}"
 case "${PYVER}" in
-  3.10|3.11) echo "Python version OK" ;;
-  *) echo "WARNING: Python 3.10 or 3.11 recommended (found ${PYVER})" ;;
+  3.10|3.11|3.12) echo "Python version OK" ;;
+  *) echo "WARNING: Python 3.10–3.12 recommended (found ${PYVER})" ;;
 esac
 
 # Virtual environment

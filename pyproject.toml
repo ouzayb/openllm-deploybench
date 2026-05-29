@@ -7,7 +7,7 @@ name = "openllm-deploybench"
 version = "0.1.0"
 description = "Benchmark suite for open-weight LLM deployment on NVIDIA GPUs"
 readme = "README.md"
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.10,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "OpenLLM DeployBench" }]
 dependencies = [
