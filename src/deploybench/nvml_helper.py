@@ -33,7 +33,10 @@ def nvml_init() -> tuple[Any | None, str | None]:
     global _nvml_init_error
     nvml = get_nvml()
     if nvml is None:
-        _nvml_init_error = "nvidia-ml-py/pynvml not installed"
+        _nvml_init_error = (
+            "nvidia-ml-py not installed (pip install nvidia-ml-py). "
+            "Do not run: pip uninstall pynvml — that removes NVML bindings."
+        )
         return None, _nvml_init_error
     try:
         nvml.nvmlInit()

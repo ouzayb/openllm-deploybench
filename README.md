@@ -191,6 +191,18 @@ Re-run `bash scripts/install_ubuntu.sh` on a fresh machine — it calls `setup_c
 
 **Emergency fallback** (no nvcc, slower sampling): `export VLLM_USE_FLASHINFER_SAMPLER=0`
 
+## Troubleshooting `No module named 'pynvml'`
+
+This is **not** a reboot issue. NVML Python bindings come from the **`nvidia-ml-py`** package (it imports as `pynvml`).
+
+```bash
+source .venv/bin/activate
+bash scripts/fix_nvml.sh
+bash scripts/check_environment.sh
+```
+
+Do **not** run `pip uninstall pynvml` unless you immediately reinstall `nvidia-ml-py`.
+
 ## Troubleshooting NVML / GPU detection
 
 ### `NVML/RM version mismatch` or `found 0` GPUs

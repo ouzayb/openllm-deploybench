@@ -101,10 +101,18 @@ except Exception as e:
   else
     warn "NVML Python init failed: ${NVML_ERR}"
     echo "       Benchmarks still run; hardware probe uses nvidia-smi fallback."
-    echo "       For power/GPU monitoring during runs, fix driver mismatch:"
-    echo "         sudo reboot"
-    echo "       Or after driver update:"
-    echo "         sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null; sudo modprobe nvidia"
+    if echo "${NVML_ERR}" | grep -qi "No module named"; then
+      echo "       Fix (missing Python package):"
+      echo "         source .venv/bin/activate"
+      echo "         bash scripts/fix_nvml.sh"
+      echo "         or: pip install --upgrade nvidia-ml-py"
+    elif echo "${NVML_ERR}" | grep -qi "mismatch\|NVML"; then
+      echo "       Fix (driver / NVML library mismatch):"
+      echo "         sudo reboot"
+      echo "         or: sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null; sudo modprobe nvidia"
+    else
+      echo "       See: bash scripts/fix_nvml.sh"
+    fi
   fi
 fi
 

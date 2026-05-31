@@ -56,9 +56,21 @@ pip install -r requirements.txt
 echo "Installing package in editable mode..."
 pip install -e .
 
-# Prefer nvidia-ml-py over deprecated standalone pynvml
-pip uninstall -y pynvml 2>/dev/null || true
-pip install -q nvidia-ml-py
+# NVML: nvidia-ml-py provides `import pynvml` (install BEFORE any uninstall)
+pip install --upgrade "nvidia-ml-py>=12.535.133"
+python3 -c "import pynvml; print('nvidia-ml-py import OK')" || {
+  echo "ERROR: nvidia-ml-py install failed. Run: bash scripts/fix_nvml.sh"
+  exit 1
+}
+# Only remove deprecated standalone PyPI package `pynvml` if nvidia-ml-py is already working
+if pip show pynvml &>/dev/null 2>&1 && ! pip show nvidia-ml-py &>/dev/null 2>&1; then
+  pip uninstall -y pynvml 2>/dev/null || true
+  pip install --upgrade "nvidia-ml-py>=12.535.133"
+fi
+python3 -c "import pynvml; pynvml.nvmlInit(); pynvml.nvmlShutdown(); print('NVML init OK')" || {
+  echo "WARNING: NVML init failed (driver mismatch?). Hardware probe still uses nvidia-smi."
+  echo "         Try: sudo reboot"
+}
 
 echo ""
 echo "=== NVIDIA / CUDA Diagnostics ==="
