@@ -188,6 +188,17 @@ bash scripts/check_environment.sh
 
 Re-run `bash scripts/install_ubuntu.sh` after `git pull` — it pins setuptools before and after installing `requirements.txt`.
 
+## Troubleshooting benchmark: `No module named vllm.benchmarks.bench_serve`
+
+vLLM 0.22 moved benchmarks to the CLI: `vllm bench serve` (not `python -m vllm.benchmarks...`). Install bench extras:
+
+```bash
+.venv/bin/python -m pip install "vllm[bench]"
+vllm bench serve --help
+```
+
+Then re-run `deploybench run-serving`.
+
 ## Troubleshooting vLLM: `Engine core initialization failed`
 
 The JSONL error often shows only the **APIServer** traceback. The real cause is usually earlier in the server log from **EngineCore** (FlashInfer JIT, CUDA toolkit mismatch, OOM, or v1 engine bugs).

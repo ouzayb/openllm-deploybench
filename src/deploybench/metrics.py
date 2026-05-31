@@ -152,8 +152,14 @@ def classify_error(exc: BaseException | str) -> tuple[str, str]:
         return "hf_auth", str(exc)
     if "quantization" in msg or "unsupported" in msg and "quant" in msg:
         return "unsupported_quantization", str(exc)
-    if "no module named" in msg or "not found" in msg and "vllm" in msg:
+    if "no module named 'vllm'" in msg or 'no module named "vllm"' in msg:
         return "vllm_missing", str(exc)
+    if "no module named vllm.benchmarks" in msg or "vllm.benchmarks" in msg:
+        return "bench_cli_missing", (
+            f"{exc} — use `vllm bench` (vLLM 0.22+). Install extras: pip install 'vllm[bench]'"
+        )
+    if "unknown command" in msg and "bench" in msg:
+        return "bench_cli_missing", str(exc)
     if "connection" in msg or "health" in msg or "startup" in msg:
         return "server_startup_failure", str(exc)
     if "config" in msg or "yaml" in msg:

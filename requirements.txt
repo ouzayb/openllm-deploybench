@@ -2,7 +2,7 @@
 setuptools>=77.0.3,<81.0.0
 wheel
 torch
-vllm
+vllm[bench]
 transformers
 accelerate
 datasets

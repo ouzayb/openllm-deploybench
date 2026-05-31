@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "OpenLLM DeployBench" }]
 dependencies = [
     "torch",
-    "vllm",
+    "vllm[bench]",
     "transformers",
     "accelerate",
     "datasets",

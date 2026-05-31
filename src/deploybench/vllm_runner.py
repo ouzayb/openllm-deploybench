@@ -148,6 +148,77 @@ def _resolve_vllm_argv_prefixes() -> list[list[str]]:
     return prefixes
 
 
+def _build_vllm_bench_commands(subcommand: str, args: list[str]) -> list[list[str]]:
+    """Build `vllm bench <subcommand>` command variants (0.22+ CLI + legacy modules)."""
+    bench_tail = ["bench", subcommand] + args
+    commands: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def add(cmd: list[str]) -> None:
+        key = tuple(cmd)
+        if key not in seen:
+            seen.add(key)
+            commands.append(cmd)
+
+    for prefix in _resolve_vllm_argv_prefixes():
+        add(prefix + bench_tail)
+
+    legacy_modules = {
+        "serve": "vllm.benchmarks.bench_serve",
+        "throughput": "vllm.benchmarks.bench_throughput",
+    }
+    legacy_mod = legacy_modules.get(subcommand)
+    if legacy_mod:
+        add([sys.executable, "-m", legacy_mod] + args)
+
+    return commands
+
+
+def _run_command_attempts(
+    commands: list[list[str]],
+    *,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run commands in order; stop on first success."""
+    if env is None:
+        env = _vllm_subprocess_env()
+    last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}
+    for attempt_cmd in commands:
+        try:
+            proc = subprocess.run(
+                attempt_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+            last_result = {
+                "command": " ".join(attempt_cmd),
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "returncode": proc.returncode,
+            }
+            if proc.returncode == 0:
+                break
+        except FileNotFoundError as e:
+            last_result = {
+                "command": " ".join(attempt_cmd),
+                "stdout": "",
+                "stderr": str(e),
+                "returncode": 127,
+            }
+            continue
+        except subprocess.TimeoutExpired:
+            last_result = {
+                "command": " ".join(attempt_cmd),
+                "error": "benchmark timeout",
+                "returncode": -1,
+            }
+            break
+    return last_result
+
+
 def _serve_cli_args(
     hf_id: str,
     dtype: str,
@@ -328,7 +399,9 @@ def start_vllm_server(
             last_err = err
             logger.warning(
                 "Server start failed (cmd=%s env=%s): %s",
-                cmd[2:4], label, err.splitlines()[0] if err else "",
+                " ".join(cmd[:5]),
+                label,
+                err.splitlines()[0] if err else "",
             )
     return False, last_err, attempts[-1]
 
@@ -474,10 +547,8 @@ def run_bench_serve(
     result_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run vllm bench serve against a running server."""
-    with tempfile.TemporaryDirectory() as tmp:
-        result_file = Path(tmp) / "bench_result.json"
-        cmd = [
-            sys.executable, "-m", "vllm.benchmarks.bench_serve",
+    with tempfile.TemporaryDirectory():
+        bench_args = [
             "--backend", "vllm",
             "--model", hf_id,
             "--endpoint", "/v1/completions",
@@ -491,34 +562,10 @@ def run_bench_serve(
             "--custom-output-len", str(output_tokens),
             "--custom-skip-chat-template",
         ]
-        # Try alternate module path for different vLLM versions
-        alt_cmds = [
-            ["vllm", "bench", "serve"] + cmd[4:],
-            cmd,
-        ]
-        last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}
-        for attempt_cmd in alt_cmds:
-            try:
-                proc = subprocess.run(
-                    attempt_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=3600,
-                    env=_vllm_subprocess_env(),
-                )
-                last_result = {
-                    "command": " ".join(attempt_cmd),
-                    "stdout": proc.stdout,
-                    "stderr": proc.stderr,
-                    "returncode": proc.returncode,
-                }
-                if proc.returncode == 0:
-                    break
-            except FileNotFoundError:
-                continue
-            except subprocess.TimeoutExpired:
-                last_result["error"] = "benchmark timeout"
-                break
+        last_result = _run_command_attempts(
+            _build_vllm_bench_commands("serve", bench_args),
+            timeout=3600,
+        )
 
         metrics = parse_vllm_bench_output(
             last_result.get("stdout", ""),
@@ -556,8 +603,7 @@ def run_bench_throughput_offline(
     enforce_eager: bool,
     monitor: GPUMonitor | None = None,
 ) -> dict[str, Any]:
-    cmd = [
-        sys.executable, "-m", "vllm.benchmarks.bench_throughput",
+    bench_args = [
         "--model", hf_id,
         "--dataset-name", "random",
         "--random-input-len", str(prompt_tokens),
@@ -570,39 +616,19 @@ def run_bench_throughput_offline(
         "--seed", str(seed),
     ]
     if trust_remote_code:
-        cmd.append("--trust-remote-code")
+        bench_args.append("--trust-remote-code")
     if enforce_eager:
-        cmd.append("--enforce-eager")
+        bench_args.append("--enforce-eager")
     if quantization:
-        cmd.extend(["--quantization", quantization])
+        bench_args.extend(["--quantization", quantization])
 
-    alt_cmds = [
-        ["vllm", "bench", "throughput"] + cmd[4:],
-        cmd,
-    ]
     if monitor:
         monitor.start()
 
-    last_result: dict[str, Any] = {}
-    for attempt_cmd in alt_cmds:
-        try:
-            proc = subprocess.run(
-                attempt_cmd,
-                capture_output=True,
-                text=True,
-                timeout=7200,
-                env=_vllm_subprocess_env(),
-            )
-            last_result = {
-                "command": " ".join(attempt_cmd),
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-                "returncode": proc.returncode,
-            }
-            if proc.returncode == 0:
-                break
-        except FileNotFoundError:
-            continue
+    last_result = _run_command_attempts(
+        _build_vllm_bench_commands("throughput", bench_args),
+        timeout=7200,
+    )
 
     samples = monitor.stop() if monitor else []
     summary = monitor.summarize(samples) if monitor else None

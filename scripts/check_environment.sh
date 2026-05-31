@@ -54,6 +54,12 @@ check "vllm import" "\"${PYTHON}\" -c 'import vllm'"
 VLLM_BIN="$(dirname "${PYTHON}")/vllm"
 if [[ -x "${VLLM_BIN}" ]] || command -v vllm &>/dev/null; then
   echo "[OK] vllm CLI ($(command -v vllm 2>/dev/null || echo "${VLLM_BIN}"))"
+  if "${VLLM_BIN:-vllm}" bench --help &>/dev/null; then
+    echo "[OK] vllm bench subcommand (pip install 'vllm[bench]' if missing)"
+  else
+    echo "[FAIL] vllm bench not available. Fix: ${PYTHON} -m pip install 'vllm[bench]'"
+    FAIL=1
+  fi
 else
   echo "[FAIL] vllm CLI not found (need .venv/bin/vllm). Re-run: bash scripts/install_ubuntu.sh"
   FAIL=1
