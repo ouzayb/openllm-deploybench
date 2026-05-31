@@ -15,7 +15,9 @@ from deploybench.hardware_probe import run_probe
 from deploybench.long_context import run_long_context_benchmark
 from deploybench.plotting import run_plot
 from deploybench.quantization import run_quantization_benchmark
-from deploybench.utils import PROJECT_ROOT, setup_logging
+from deploybench.utils import PROJECT_ROOT, load_project_cuda_env, setup_logging
+
+load_project_cuda_env()
 
 app = typer.Typer(
     name="deploybench",

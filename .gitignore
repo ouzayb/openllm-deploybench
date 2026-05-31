@@ -22,6 +22,9 @@ reports/*
 # Generated workloads
 workloads/synthetic/generated/*.jsonl
 
+# Generated CUDA environment (from setup_cuda_env.sh)
+scripts/env.cuda.sh
+
 # Logs and caches
 *.log
 .cache/

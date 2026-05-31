@@ -79,6 +79,29 @@ def get_git_commit() -> str | None:
     return None
 
 
+def load_project_cuda_env() -> None:
+    """Load scripts/env.cuda.sh into os.environ (from install / setup_cuda_env.sh)."""
+    env_file = PROJECT_ROOT / "scripts" / "env.cuda.sh"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("export ") or "=" not in line:
+            continue
+        key, _, value = line[7:].partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and "${" not in value:
+            os.environ[key] = value
+        elif key == "PATH" and "${" in value:
+            # Expand ${CUDA_HOME} if CUDA_HOME already set
+            cuda = os.environ.get("CUDA_HOME", "")
+            if cuda:
+                os.environ["PATH"] = value.replace("${CUDA_HOME}", cuda).replace(
+                    "${PATH}", os.environ.get("PATH", "")
+                )
+
+
 def collect_relevant_env() -> dict[str, str]:
     prefixes = ("CUDA_", "NCCL_", "VLLM_", "HF_", "HUGGING", "TOKENIZERS")
     secret_keys = {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}

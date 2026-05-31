@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -168,11 +169,40 @@ def start_vllm_server(
     return False, last_err, attempts[-1]
 
 
+def _resolve_cuda_home() -> str | None:
+    nvcc = shutil.which("nvcc")
+    if not nvcc:
+        for candidate in (
+            "/usr/local/cuda/bin/nvcc",
+            "/usr/lib/nvidia-cuda-toolkit/bin/nvcc",
+            "/usr/bin/nvcc",
+        ):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                nvcc = candidate
+                break
+    if not nvcc:
+        return os.environ.get("CUDA_HOME")
+    return str(Path(nvcc).resolve().parent.parent)
+
+
 def _vllm_subprocess_env() -> dict[str, str]:
-    """Environment for vLLM child processes."""
+    """Environment for vLLM child processes (CUDA toolkit + FlashInfer when nvcc exists)."""
+    from deploybench.utils import load_project_cuda_env
+
+    load_project_cuda_env()
     env = os.environ.copy()
-    # FlashInfer JIT needs nvcc; fall back to PyTorch sampler if CUDA toolkit missing
-    env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    cuda_home = _resolve_cuda_home()
+    if cuda_home:
+        env["CUDA_HOME"] = cuda_home
+        env["PATH"] = f"{cuda_home}/bin:{env.get('PATH', '')}"
+        lib = f"{cuda_home}/lib64"
+        env["LD_LIBRARY_PATH"] = f"{lib}:{env.get('LD_LIBRARY_PATH', '')}"
+        env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+    else:
+        env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+        logger.warning(
+            "nvcc not found; VLLM_USE_FLASHINFER_SAMPLER=0. Run: bash scripts/setup_cuda_env.sh"
+        )
     return env
 
 

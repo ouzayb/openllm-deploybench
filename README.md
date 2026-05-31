@@ -36,24 +36,23 @@ All paths are under `configs/`. Cloud examples include placeholder `hourly_price
 ## Requirements
 
 - Ubuntu Desktop or Server (22.04+ recommended)
-- NVIDIA GPU + driver
-- CUDA-enabled Python environment
+- NVIDIA GPU + **driver** (`nvidia-smi` works)
+- **CUDA toolkit** (`nvcc`) — installed automatically by `scripts/install_ubuntu.sh`
 - Python 3.10, 3.11, or 3.12
+- ~20 GB free disk for small models; more for 32B/70B
 - SSH-friendly (no GUI required)
 
-## Quick Start
+## Quick Start (download and run)
 
 ```bash
 git clone https://github.com/ouzayb/openllm-deploybench.git
 cd openllm-deploybench
-```
 
-**Install (required before `deploybench` works):**
-
-```bash
-# Linux
+# Installs: build tools, nvidia-cuda-toolkit (nvcc), Python venv, vLLM, deploybench
+# Requires sudo for apt packages. NVIDIA driver must already be installed.
 bash scripts/install_ubuntu.sh
-source .venv/bin/activate
+
+source .venv/bin/activate   # also loads scripts/env.cuda.sh (CUDA_HOME, FlashInfer)
 
 # Windows (PowerShell)
 python -m venv .venv
@@ -177,32 +176,20 @@ python scripts/run_all.py --hardware-config configs/hardware.local.yaml
 
 ## Troubleshooting vLLM server: `Could not find nvcc`
 
-If `vllm serve` fails during engine startup with:
+vLLM 0.22+ uses **FlashInfer** for sampling, which needs **`nvcc`** (CUDA toolkit), not only the NVIDIA driver.
 
-```text
-RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
-```
-
-vLLM 0.22+ uses **FlashInfer** for sampling, which JIT-compiles CUDA code and needs the **CUDA toolkit** (`nvcc`), not just the NVIDIA driver.
-
-**Quick fix (works without nvcc):**
+**Fix (recommended):**
 
 ```bash
-export VLLM_USE_FLASHINFER_SAMPLER=0
-vllm serve Qwen/Qwen2.5-7B-Instruct --dtype bfloat16 --max-model-len 8192 --trust-remote-code
-```
-
-`deploybench run-serving` sets this automatically for subprocesses. You may see a warning about FlashInfer being disabled; that is expected.
-
-**Proper fix (best performance):** install CUDA toolkit so `nvcc` exists, then you can use `VLLM_USE_FLASHINFER_SAMPLER=1`:
-
-```bash
-# Ubuntu example (adjust CUDA version to match driver)
-sudo apt install -y nvidia-cuda-toolkit
-# or NVIDIA's cuda-toolkit-12-x package
+bash scripts/setup_cuda_env.sh   # apt: nvidia-cuda-toolkit + writes scripts/env.cuda.sh
+source .venv/bin/activate
 which nvcc
-export CUDA_HOME=$(dirname $(dirname $(which nvcc)))
+deploybench run-serving ...
 ```
+
+Re-run `bash scripts/install_ubuntu.sh` on a fresh machine — it calls `setup_cuda_env.sh` automatically.
+
+**Emergency fallback** (no nvcc, slower sampling): `export VLLM_USE_FLASHINFER_SAMPLER=0`
 
 ## Troubleshooting NVML / GPU detection
 

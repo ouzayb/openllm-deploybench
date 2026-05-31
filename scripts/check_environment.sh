@@ -58,8 +58,16 @@ check "transformers" "python3 -c 'import transformers'"
 
 if command -v nvcc &>/dev/null; then
   echo "[OK] nvcc ($(nvcc --version | tail -1))"
+  if [[ -f "${SCRIPT_DIR}/env.cuda.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/env.cuda.sh"
+    echo "[OK] CUDA_HOME=${CUDA_HOME:-unset}"
+  fi
 else
-  warn "nvcc not found — vLLM FlashInfer sampler needs CUDA toolkit, or set VLLM_USE_FLASHINFER_SAMPLER=0"
+  echo "[FAIL] nvcc not found — required for vLLM 0.22+ (FlashInfer). Run:"
+  echo "       bash scripts/setup_cuda_env.sh"
+  echo "       or: sudo apt install -y nvidia-cuda-toolkit build-essential ninja-build"
+  FAIL=1
 fi
 
 # NVML init vs nvidia-smi
