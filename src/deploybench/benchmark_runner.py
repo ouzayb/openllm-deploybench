@@ -155,7 +155,7 @@ def run_serving_benchmark(
                 gpu_count,
             )
 
-            serve_cmd = build_serve_command(
+            serve_kwargs = dict(
                 hf_id=model_spec.hf_id,
                 dtype=merged["dtype"],
                 max_model_len=max_model_len,
@@ -224,15 +224,13 @@ def run_serving_benchmark(
                                     raw.get("stderr", "") or "offline benchmark failed"
                                 )
                         else:
-                            from deploybench.vllm_runner import start_server
+                            from deploybench.vllm_runner import start_vllm_server
 
                             if not server_loaded:
-                                ok, err = start_server(
-                                    serve_cmd,
-                                    server_log,
-                                    rt.server_startup_timeout_sec,
-                                    rt.host,
-                                    rt.port,
+                                ok, err, serve_cmd = start_vllm_server(
+                                    log_path=server_log,
+                                    startup_timeout_sec=rt.server_startup_timeout_sec,
+                                    **serve_kwargs,
                                 )
                                 if not ok:
                                     et, em = classify_error(err)

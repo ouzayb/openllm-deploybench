@@ -58,6 +58,16 @@ def _cleanup_server() -> None:
 atexit.register(_cleanup_server)
 
 
+def _tail_log(log_path: Path, lines: int = 40) -> str:
+    if not log_path.exists():
+        return ""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        return "\n".join(text.splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
 def build_serve_command(
     hf_id: str,
     dtype: str,
@@ -70,6 +80,38 @@ def build_serve_command(
     host: str,
     enforce_eager: bool,
 ) -> list[str]:
+    # vLLM 0.22+: prefer `vllm serve <model>` (openai.api_server module is deprecated)
+    cmd = [
+        sys.executable, "-m", "vllm", "serve", hf_id,
+        "--dtype", dtype,
+        "--max-model-len", str(max_model_len),
+        "--tensor-parallel-size", str(tensor_parallel_size),
+        "--gpu-memory-utilization", str(gpu_memory_utilization),
+        "--port", str(port),
+        "--host", host,
+    ]
+    if trust_remote_code:
+        cmd.append("--trust-remote-code")
+    if enforce_eager:
+        cmd.append("--enforce-eager")
+    if quantization:
+        cmd.extend(["--quantization", quantization])
+    return cmd
+
+
+def build_serve_command_legacy(
+    hf_id: str,
+    dtype: str,
+    max_model_len: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    quantization: str | None,
+    trust_remote_code: bool,
+    port: int,
+    host: str,
+    enforce_eager: bool,
+) -> list[str]:
+    """Fallback for older vLLM (<0.22)."""
     cmd = [
         sys.executable, "-m", "vllm.entrypoints.openai.api_server",
         "--model", hf_id,
@@ -87,6 +129,43 @@ def build_serve_command(
     if quantization:
         cmd.extend(["--quantization", quantization])
     return cmd
+
+
+def start_vllm_server(
+    hf_id: str,
+    dtype: str,
+    max_model_len: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    quantization: str | None,
+    trust_remote_code: bool,
+    port: int,
+    host: str,
+    enforce_eager: bool,
+    log_path: Path,
+    startup_timeout_sec: int = 600,
+) -> tuple[bool, str, list[str]]:
+    """Try vllm serve (0.22+), then legacy api_server."""
+    attempts = [
+        build_serve_command(
+            hf_id, dtype, max_model_len, tensor_parallel_size,
+            gpu_memory_utilization, quantization, trust_remote_code,
+            port, host, enforce_eager,
+        ),
+        build_serve_command_legacy(
+            hf_id, dtype, max_model_len, tensor_parallel_size,
+            gpu_memory_utilization, quantization, trust_remote_code,
+            port, host, enforce_eager,
+        ),
+    ]
+    last_err = ""
+    for cmd in attempts:
+        ok, err = start_server(cmd, log_path, startup_timeout_sec, host, port)
+        if ok:
+            return True, "", cmd
+        last_err = err
+        logger.warning("Server start failed (%s), trying next command variant...", cmd[2:4])
+    return False, last_err, attempts[-1]
 
 
 def start_server(
@@ -127,7 +206,11 @@ def start_server(
     while time.time() < deadline:
         if _active_server.poll() is not None:
             log_file.close()
-            return False, f"Server exited early with code {_active_server.returncode}"
+            tail = _tail_log(log_path)
+            msg = f"Server exited early with code {_active_server.returncode}"
+            if tail:
+                msg += f"\n--- last lines of {log_path} ---\n{tail}"
+            return False, msg
         for url in health_urls:
             try:
                 r = requests.get(url, timeout=5)

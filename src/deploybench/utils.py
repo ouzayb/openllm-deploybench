@@ -81,10 +81,14 @@ def get_git_commit() -> str | None:
 
 def collect_relevant_env() -> dict[str, str]:
     prefixes = ("CUDA_", "NCCL_", "VLLM_", "HF_", "HUGGING", "TOKENIZERS")
+    secret_keys = {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}
     out: dict[str, str] = {}
     for key, val in os.environ.items():
         if any(key.startswith(p) for p in prefixes):
-            out[key] = val
+            if key in secret_keys or "TOKEN" in key.upper():
+                out[key] = "***redacted***"
+            else:
+                out[key] = val
     return out
 
 
