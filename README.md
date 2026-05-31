@@ -174,6 +174,20 @@ deploybench run-quantization \
 python scripts/run_all.py --hardware-config configs/hardware.local.yaml
 ```
 
+## Troubleshooting pip: `setuptools 82.x is incompatible` with vLLM / torch
+
+vLLM 0.22 and recent PyTorch require **`setuptools<81`** on Python 3.12. A plain `pip install --upgrade setuptools` pulls 82.x and triggers resolver warnings.
+
+**Fix:**
+
+```bash
+source .venv/bin/activate
+.venv/bin/python -m pip install "setuptools>=77.0.3,<81.0.0"
+bash scripts/check_environment.sh
+```
+
+Re-run `bash scripts/install_ubuntu.sh` after `git pull` — it pins setuptools before and after installing `requirements.txt`.
+
 ## Troubleshooting vLLM server: `Could not find nvcc`
 
 vLLM 0.22+ uses **FlashInfer** for sampling, which needs **`nvcc`** (CUDA toolkit), not only the NVIDIA driver.

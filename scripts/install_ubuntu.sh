@@ -49,17 +49,21 @@ fi
 unset _DB_ROOT
 ACTIVATE_EOF
 
-echo "Upgrading pip..."
-pip install --upgrade pip wheel setuptools
+PYTHON="$(deploybench_python "${PROJECT_ROOT}")"
+echo "Using Python: ${PYTHON}"
+
+echo "Installing pinned pip/setuptools (vLLM 0.22 + torch require setuptools<81)..."
+"${PYTHON}" -m pip install --upgrade "pip>=24" "wheel"
+"${PYTHON}" -m pip install "setuptools>=77.0.3,<81.0.0"
 
 echo "Installing requirements (this may take a while)..."
-pip install -r requirements.txt
+"${PYTHON}" -m pip install -r requirements.txt
 
 echo "Installing package in editable mode..."
-pip install -e .
+"${PYTHON}" -m pip install -e .
 
-PYTHON="$(deploybench_python "${PROJECT_ROOT}")"
-echo "Using Python for pip: ${PYTHON}"
+# Re-pin setuptools if a dependency pulled a newer version
+"${PYTHON}" -m pip install "setuptools>=77.0.3,<81.0.0"
 
 # NVML: nvidia-ml-py provides `import pynvml`
 "${PYTHON}" -m pip install --upgrade "nvidia-ml-py>=12.535.133"

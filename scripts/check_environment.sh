@@ -53,6 +53,26 @@ fi
 check "vllm" "\"${PYTHON}\" -c 'import vllm' 2>/dev/null || command -v vllm"
 check "transformers" "\"${PYTHON}\" -c 'import transformers'"
 
+# vLLM 0.22 + torch 2.11 need setuptools<81 on Python 3.12
+if "${PYTHON}" -c "
+import setuptools
+def parse(s):
+    p = [int(x) for x in s.split('.')[:3]]
+    while len(p) < 3:
+        p.append(0)
+    return tuple(p)
+ver = parse(setuptools.__version__)
+ok = parse('77.0.3') <= ver < parse('81.0.0')
+print(f'setuptools {setuptools.__version__}')
+exit(0 if ok else 1)
+" 2>/dev/null; then
+  echo "[OK] setuptools version compatible with vLLM/torch"
+else
+  echo "[FAIL] setuptools version incompatible (need >=77.0.3,<81.0.0 for Python 3.12 + vLLM 0.22)"
+  echo "       Fix: .venv/bin/python -m pip install 'setuptools>=77.0.3,<81.0.0'"
+  FAIL=1
+fi
+
 if command -v nvcc &>/dev/null; then
   echo "[OK] nvcc ($(nvcc --version | tail -1))"
   if [[ -f "${SCRIPT_DIR}/env.cuda.sh" ]]; then

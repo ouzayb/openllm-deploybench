@@ -1,3 +1,6 @@
+# Pin before torch/vllm — both reject setuptools 81+
+setuptools>=77.0.3,<81.0.0
+wheel
 torch
 vllm
 transformers
