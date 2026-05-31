@@ -62,6 +62,7 @@ class RuntimeConfig(BaseModel):
     tensor_parallel_size: int | str = "auto"
     gpu_memory_utilization: float = 0.90
     enforce_eager: bool = False
+    use_v1_engine: bool = False
     seed: int = 42
     port: int = 8000
     host: str = "127.0.0.1"

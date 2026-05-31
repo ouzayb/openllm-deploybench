@@ -166,6 +166,7 @@ def run_serving_benchmark(
                 port=rt.port,
                 host=rt.host,
                 enforce_eager=rt.enforce_eager,
+                use_v1_engine=rt.use_v1_engine,
             )
 
             # Load server once per model+max_model_len for online mode

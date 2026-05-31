@@ -188,6 +188,30 @@ bash scripts/check_environment.sh
 
 Re-run `bash scripts/install_ubuntu.sh` after `git pull` — it pins setuptools before and after installing `requirements.txt`.
 
+## Troubleshooting vLLM: `Engine core initialization failed`
+
+The JSONL error often shows only the **APIServer** traceback. The real cause is usually earlier in the server log from **EngineCore** (FlashInfer JIT, CUDA toolkit mismatch, OOM, or v1 engine bugs).
+
+**Inspect the full log:**
+
+```bash
+grep -E 'ERROR|EngineCore|nvcc|FlashInfer|CUDA|OOM|Traceback' \
+  results/serving/logs/serve_qwen2_5_7b_instruct_8192.log | tail -80
+```
+
+**Quick manual test (legacy engine + no FlashInfer JIT):**
+
+```bash
+source .venv/bin/activate
+export VLLM_USE_V1=0
+export VLLM_USE_FLASHINFER_SAMPLER=0
+python -m vllm serve Qwen/Qwen2.5-7B-Instruct --max-model-len 8192 --enforce-eager
+```
+
+After `git pull`, `deploybench run-serving` retries automatically with `VLLM_USE_V1=0` and FlashInfer disabled. Smoke config sets `enforce_eager: true` and `use_v1_engine: false`.
+
+If it still fails, check for stale GPU processes: `pkill -9 -f vllm; nvidia-smi`
+
 ## Troubleshooting vLLM server: `Could not find nvcc`
 
 vLLM 0.22+ uses **FlashInfer** for sampling, which needs **`nvcc`** (CUDA toolkit), not only the NVIDIA driver.

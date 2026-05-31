@@ -59,14 +59,62 @@ def _cleanup_server() -> None:
 atexit.register(_cleanup_server)
 
 
-def _tail_log(log_path: Path, lines: int = 40) -> str:
+_ROOT_CAUSE_MARKERS = (
+    "Could not find nvcc",
+    "FlashInfer",
+    "flashinfer",
+    "EngineCore failed",
+    "EngineCore_DP",
+    "EngineCore_",
+    "CUDA out of memory",
+    "CUDA error",
+    "OutOfMemoryError",
+    "torch.cuda.OutOfMemoryError",
+    "No CUDA GPUs",
+    "NCCL",
+    "Failed to load",
+    "ImportError",
+    "ModuleNotFoundError",
+)
+
+
+def _extract_vllm_failure_excerpt(log_path: Path, max_lines: int = 80) -> str:
+    """Prefer EngineCore / worker errors over the APIServer wrapper traceback."""
     if not log_path.exists():
         return ""
     try:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
-        return "\n".join(text.splitlines()[-lines:])
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return ""
+    if not lines:
+        return ""
+
+    hits: list[str] = []
+    for i, line in enumerate(lines):
+        if any(m in line for m in _ROOT_CAUSE_MARKERS):
+            start = max(0, i - 4)
+            end = min(len(lines), i + 15)
+            chunk = lines[start:end]
+            if chunk and (not hits or chunk != hits[-1]):
+                hits.extend(chunk)
+                hits.append("---")
+
+    if hits:
+        text = "\n".join(hits)
+        excerpt_lines = text.splitlines()
+        if len(excerpt_lines) > max_lines:
+            excerpt_lines = excerpt_lines[-max_lines:]
+        return "\n".join(excerpt_lines)
+
+    # Skip repetitive APIServer-only tail if a non-APIServer traceback exists earlier
+    non_api = [ln for ln in lines if "(APIServer pid=" not in ln]
+    if len(non_api) > 20:
+        return "\n".join(non_api[-max_lines:])
+    return "\n".join(lines[-40:])
+
+
+def _tail_log(log_path: Path, lines: int = 40) -> str:
+    return _extract_vllm_failure_excerpt(log_path, max_lines=lines)
 
 
 def build_serve_command(
@@ -145,8 +193,9 @@ def start_vllm_server(
     enforce_eager: bool,
     log_path: Path,
     startup_timeout_sec: int = 600,
+    use_v1_engine: bool = False,
 ) -> tuple[bool, str, list[str]]:
-    """Try vllm serve (0.22+), then legacy api_server."""
+    """Try vllm serve (0.22+), then legacy api_server; retry with stable env fallbacks."""
     attempts = [
         build_serve_command(
             hf_id, dtype, max_model_len, tensor_parallel_size,
@@ -159,13 +208,45 @@ def start_vllm_server(
             port, host, enforce_eager,
         ),
     ]
+    env_attempts: list[tuple[str, dict[str, str] | None]] = [
+        ("default", _vllm_subprocess_env(use_v1_engine=use_v1_engine)),
+        ("VLLM_USE_V1=0", _vllm_subprocess_env(use_v1_engine=False)),
+        (
+            "VLLM_USE_V1=0,FlashInfer off",
+            _vllm_subprocess_env(use_v1_engine=False, use_flashinfer_sampler=False),
+        ),
+    ]
+    # Deduplicate identical env dicts
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    unique_env_attempts: list[tuple[str, dict[str, str] | None]] = []
+    for label, env in env_attempts:
+        key = tuple(sorted((env or {}).items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_env_attempts.append((label, env))
+
     last_err = ""
     for cmd in attempts:
-        ok, err = start_server(cmd, log_path, startup_timeout_sec, host, port)
-        if ok:
-            return True, "", cmd
-        last_err = err
-        logger.warning("Server start failed (%s), trying next command variant...", cmd[2:4])
+        for attempt_idx, (label, vllm_env) in enumerate(unique_env_attempts):
+            ok, err = start_server(
+                cmd,
+                log_path,
+                startup_timeout_sec,
+                host,
+                port,
+                vllm_env=vllm_env,
+                append_log=attempt_idx > 0,
+            )
+            if ok:
+                if label != "default":
+                    logger.info("Server started with fallback env: %s", label)
+                return True, "", cmd
+            last_err = err
+            logger.warning(
+                "Server start failed (cmd=%s env=%s): %s",
+                cmd[2:4], label, err.splitlines()[0] if err else "",
+            )
     return False, last_err, attempts[-1]
 
 
@@ -185,7 +266,12 @@ def _resolve_cuda_home() -> str | None:
     return str(Path(nvcc).resolve().parent.parent)
 
 
-def _vllm_subprocess_env() -> dict[str, str]:
+def _vllm_subprocess_env(
+    *,
+    use_v1_engine: bool | None = None,
+    use_flashinfer_sampler: bool | None = None,
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Environment for vLLM child processes (CUDA toolkit + FlashInfer when nvcc exists)."""
     from deploybench.utils import load_project_cuda_env
 
@@ -197,12 +283,29 @@ def _vllm_subprocess_env() -> dict[str, str]:
         env["PATH"] = f"{cuda_home}/bin:{env.get('PATH', '')}"
         lib = f"{cuda_home}/lib64"
         env["LD_LIBRARY_PATH"] = f"{lib}:{env.get('LD_LIBRARY_PATH', '')}"
-        env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+
+    if use_flashinfer_sampler is None:
+        if "VLLM_USE_FLASHINFER_SAMPLER" not in env:
+            if cuda_home and shutil.which("nvcc"):
+                env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+            else:
+                env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+                logger.warning(
+                    "nvcc not found; VLLM_USE_FLASHINFER_SAMPLER=0. "
+                    "Run: bash scripts/setup_cuda_env.sh"
+                )
     else:
-        env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
-        logger.warning(
-            "nvcc not found; VLLM_USE_FLASHINFER_SAMPLER=0. Run: bash scripts/setup_cuda_env.sh"
-        )
+        env["VLLM_USE_FLASHINFER_SAMPLER"] = "1" if use_flashinfer_sampler else "0"
+
+    if use_v1_engine is None:
+        if "VLLM_USE_V1" not in env:
+            # V1 engine often hides worker errors; legacy engine is more stable for smoke runs
+            env["VLLM_USE_V1"] = os.environ.get("DEPLOYBENCH_VLLM_USE_V1", "0")
+    else:
+        env["VLLM_USE_V1"] = "1" if use_v1_engine else "0"
+
+    if extra:
+        env.update(extra)
     return env
 
 
@@ -212,12 +315,18 @@ def start_server(
     startup_timeout_sec: int = 600,
     health_host: str = "127.0.0.1",
     health_port: int = 8000,
+    vllm_env: dict[str, str] | None = None,
+    append_log: bool = False,
 ) -> tuple[bool, str]:
     global _active_server
     _cleanup_server()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_file = log_path.open("w", encoding="utf-8")
-    vllm_env = _vllm_subprocess_env()
+    log_file = log_path.open("a" if append_log else "w", encoding="utf-8")
+    if append_log:
+        log_file.write(f"\n\n=== retry: {' '.join(cmd[:6])}... ===\n")
+        log_file.flush()
+    if vllm_env is None:
+        vllm_env = _vllm_subprocess_env()
     try:
         if sys.platform != "win32":
             _active_server = subprocess.Popen(
@@ -250,7 +359,7 @@ def start_server(
             tail = _tail_log(log_path)
             msg = f"Server exited early with code {_active_server.returncode}"
             if tail:
-                msg += f"\n--- last lines of {log_path} ---\n{tail}"
+                msg += f"\n--- server log excerpt ({log_path}) ---\n{tail}"
             return False, msg
         for url in health_urls:
             try:

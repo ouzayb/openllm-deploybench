@@ -8,7 +8,8 @@ runtime:
   mode: "online"
   tensor_parallel_size: "auto"
   gpu_memory_utilization: 0.90
-  enforce_eager: false
+  enforce_eager: true
+  use_v1_engine: false
   seed: 42
   port: 8000
   host: "127.0.0.1"
