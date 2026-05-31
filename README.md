@@ -175,6 +175,35 @@ deploybench run-quantization \
 python scripts/run_all.py --hardware-config configs/hardware.local.yaml
 ```
 
+## Troubleshooting vLLM server: `Could not find nvcc`
+
+If `vllm serve` fails during engine startup with:
+
+```text
+RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
+```
+
+vLLM 0.22+ uses **FlashInfer** for sampling, which JIT-compiles CUDA code and needs the **CUDA toolkit** (`nvcc`), not just the NVIDIA driver.
+
+**Quick fix (works without nvcc):**
+
+```bash
+export VLLM_USE_FLASHINFER_SAMPLER=0
+vllm serve Qwen/Qwen2.5-7B-Instruct --dtype bfloat16 --max-model-len 8192 --trust-remote-code
+```
+
+`deploybench run-serving` sets this automatically for subprocesses. You may see a warning about FlashInfer being disabled; that is expected.
+
+**Proper fix (best performance):** install CUDA toolkit so `nvcc` exists, then you can use `VLLM_USE_FLASHINFER_SAMPLER=1`:
+
+```bash
+# Ubuntu example (adjust CUDA version to match driver)
+sudo apt install -y nvidia-cuda-toolkit
+# or NVIDIA's cuda-toolkit-12-x package
+which nvcc
+export CUDA_HOME=$(dirname $(dirname $(which nvcc)))
+```
+
 ## Troubleshooting NVML / GPU detection
 
 ### `NVML/RM version mismatch` or `found 0` GPUs

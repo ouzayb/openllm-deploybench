@@ -168,6 +168,14 @@ def start_vllm_server(
     return False, last_err, attempts[-1]
 
 
+def _vllm_subprocess_env() -> dict[str, str]:
+    """Environment for vLLM child processes."""
+    env = os.environ.copy()
+    # FlashInfer JIT needs nvcc; fall back to PyTorch sampler if CUDA toolkit missing
+    env.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    return env
+
+
 def start_server(
     cmd: list[str],
     log_path: Path,
@@ -179,12 +187,14 @@ def start_server(
     _cleanup_server()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open("w", encoding="utf-8")
+    vllm_env = _vllm_subprocess_env()
     try:
         if sys.platform != "win32":
             _active_server = subprocess.Popen(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
+                env=vllm_env,
                 preexec_fn=os.setsid,
             )
         else:
@@ -192,6 +202,7 @@ def start_server(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
+                env=vllm_env,
             )
     except Exception as e:
         log_file.close()
@@ -271,6 +282,7 @@ def run_bench_serve(
                     capture_output=True,
                     text=True,
                     timeout=3600,
+                    env=_vllm_subprocess_env(),
                 )
                 last_result = {
                     "command": " ".join(attempt_cmd),
@@ -357,6 +369,7 @@ def run_bench_throughput_offline(
                 capture_output=True,
                 text=True,
                 timeout=7200,
+                env=_vllm_subprocess_env(),
             )
             last_result = {
                 "command": " ".join(attempt_cmd),

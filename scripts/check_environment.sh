@@ -56,6 +56,12 @@ fi
 check "vllm" "python3 -c 'import vllm' 2>/dev/null || command -v vllm"
 check "transformers" "python3 -c 'import transformers'"
 
+if command -v nvcc &>/dev/null; then
+  echo "[OK] nvcc ($(nvcc --version | tail -1))"
+else
+  warn "nvcc not found — vLLM FlashInfer sampler needs CUDA toolkit, or set VLLM_USE_FLASHINFER_SAMPLER=0"
+fi
+
 # NVML init vs nvidia-smi
 if command -v nvidia-smi &>/dev/null; then
   SMI_RC=0
