@@ -117,6 +117,74 @@ def _tail_log(log_path: Path, lines: int = 40) -> str:
     return _extract_vllm_failure_excerpt(log_path, max_lines=lines)
 
 
+def _resolve_vllm_argv_prefixes() -> list[list[str]]:
+    """vLLM 0.22+ exposes `vllm serve` via console script, not `python -m vllm`."""
+    prefixes: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def add(prefix: list[str]) -> None:
+        key = tuple(prefix)
+        if key not in seen:
+            seen.add(key)
+            prefixes.append(prefix)
+
+    venv_bin = Path(sys.executable).resolve().parent / "vllm"
+    if venv_bin.is_file():
+        add([str(venv_bin)])
+    which = shutil.which("vllm")
+    if which:
+        add([which])
+
+    for module in ("vllm.entrypoints.cli.main", "vllm.entrypoints.cli"):
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec(module) is not None:
+                add([sys.executable, "-m", module])
+                break
+        except (ImportError, ValueError, ModuleNotFoundError):
+            continue
+
+    return prefixes
+
+
+def _serve_cli_args(
+    hf_id: str,
+    dtype: str,
+    max_model_len: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    quantization: str | None,
+    trust_remote_code: bool,
+    port: int,
+    host: str,
+    enforce_eager: bool,
+) -> list[str]:
+    args = [
+        "serve",
+        hf_id,
+        "--dtype",
+        dtype,
+        "--max-model-len",
+        str(max_model_len),
+        "--tensor-parallel-size",
+        str(tensor_parallel_size),
+        "--gpu-memory-utilization",
+        str(gpu_memory_utilization),
+        "--port",
+        str(port),
+        "--host",
+        host,
+    ]
+    if trust_remote_code:
+        args.append("--trust-remote-code")
+    if enforce_eager:
+        args.append("--enforce-eager")
+    if quantization:
+        args.extend(["--quantization", quantization])
+    return args
+
+
 def build_serve_command(
     hf_id: str,
     dtype: str,
@@ -129,23 +197,38 @@ def build_serve_command(
     host: str,
     enforce_eager: bool,
 ) -> list[str]:
-    # vLLM 0.22+: prefer `vllm serve <model>` (openai.api_server module is deprecated)
-    cmd = [
-        sys.executable, "-m", "vllm", "serve", hf_id,
-        "--dtype", dtype,
-        "--max-model-len", str(max_model_len),
-        "--tensor-parallel-size", str(tensor_parallel_size),
-        "--gpu-memory-utilization", str(gpu_memory_utilization),
-        "--port", str(port),
-        "--host", host,
-    ]
-    if trust_remote_code:
-        cmd.append("--trust-remote-code")
-    if enforce_eager:
-        cmd.append("--enforce-eager")
-    if quantization:
-        cmd.extend(["--quantization", quantization])
-    return cmd
+    """Primary vLLM 0.22+ serve command (`vllm serve` console script)."""
+    prefixes = _resolve_vllm_argv_prefixes()
+    prefix = prefixes[0] if prefixes else [sys.executable, "-m", "vllm.entrypoints.cli.main"]
+    return prefix + _serve_cli_args(
+        hf_id, dtype, max_model_len, tensor_parallel_size,
+        gpu_memory_utilization, quantization, trust_remote_code,
+        port, host, enforce_eager,
+    )
+
+
+def build_serve_command_variants(
+    hf_id: str,
+    dtype: str,
+    max_model_len: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    quantization: str | None,
+    trust_remote_code: bool,
+    port: int,
+    host: str,
+    enforce_eager: bool,
+) -> list[list[str]]:
+    """All modern `vllm serve` invocation variants to try before legacy api_server."""
+    args = _serve_cli_args(
+        hf_id, dtype, max_model_len, tensor_parallel_size,
+        gpu_memory_utilization, quantization, trust_remote_code,
+        port, host, enforce_eager,
+    )
+    prefixes = _resolve_vllm_argv_prefixes()
+    if not prefixes:
+        prefixes = [[sys.executable, "-m", "vllm.entrypoints.cli.main"]]
+    return [prefix + args for prefix in prefixes]
 
 
 def build_serve_command_legacy(
@@ -196,18 +279,18 @@ def start_vllm_server(
     use_v1_engine: bool = False,
 ) -> tuple[bool, str, list[str]]:
     """Try vllm serve (0.22+), then legacy api_server; retry with stable env fallbacks."""
-    attempts = [
-        build_serve_command(
-            hf_id, dtype, max_model_len, tensor_parallel_size,
-            gpu_memory_utilization, quantization, trust_remote_code,
-            port, host, enforce_eager,
-        ),
-        build_serve_command_legacy(
-            hf_id, dtype, max_model_len, tensor_parallel_size,
-            gpu_memory_utilization, quantization, trust_remote_code,
-            port, host, enforce_eager,
-        ),
-    ]
+    attempts = build_serve_command_variants(
+        hf_id, dtype, max_model_len, tensor_parallel_size,
+        gpu_memory_utilization, quantization, trust_remote_code,
+        port, host, enforce_eager,
+    )
+    legacy = build_serve_command_legacy(
+        hf_id, dtype, max_model_len, tensor_parallel_size,
+        gpu_memory_utilization, quantization, trust_remote_code,
+        port, host, enforce_eager,
+    )
+    if legacy not in attempts:
+        attempts.append(legacy)
     env_attempts: list[tuple[str, dict[str, str] | None]] = [
         ("default", _vllm_subprocess_env(use_v1_engine=use_v1_engine)),
         ("VLLM_USE_V1=0", _vllm_subprocess_env(use_v1_engine=False)),

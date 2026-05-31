@@ -50,7 +50,14 @@ else
   FAIL=1
 fi
 
-check "vllm" "\"${PYTHON}\" -c 'import vllm' 2>/dev/null || command -v vllm"
+check "vllm import" "\"${PYTHON}\" -c 'import vllm'"
+VLLM_BIN="$(dirname "${PYTHON}")/vllm"
+if [[ -x "${VLLM_BIN}" ]] || command -v vllm &>/dev/null; then
+  echo "[OK] vllm CLI ($(command -v vllm 2>/dev/null || echo "${VLLM_BIN}"))"
+else
+  echo "[FAIL] vllm CLI not found (need .venv/bin/vllm). Re-run: bash scripts/install_ubuntu.sh"
+  FAIL=1
+fi
 check "transformers" "\"${PYTHON}\" -c 'import transformers'"
 
 # vLLM 0.22 + torch 2.11 need setuptools<81 on Python 3.12

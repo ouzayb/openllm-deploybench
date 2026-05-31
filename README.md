@@ -205,7 +205,8 @@ grep -E 'ERROR|EngineCore|nvcc|FlashInfer|CUDA|OOM|Traceback' \
 source .venv/bin/activate
 export VLLM_USE_V1=0
 export VLLM_USE_FLASHINFER_SAMPLER=0
-python -m vllm serve Qwen/Qwen2.5-7B-Instruct --max-model-len 8192 --enforce-eager
+vllm serve Qwen/Qwen2.5-7B-Instruct --max-model-len 8192 --enforce-eager
+# (uses .venv/bin/vllm — do not use `python -m vllm`, that module has no __main__)
 ```
 
 After `git pull`, `deploybench run-serving` retries automatically with `VLLM_USE_V1=0` and FlashInfer disabled. Smoke config sets `enforce_eager: true` and `use_v1_engine: false`.
