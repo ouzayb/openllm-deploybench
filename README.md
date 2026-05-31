@@ -193,12 +193,21 @@ Re-run `bash scripts/install_ubuntu.sh` on a fresh machine — it calls `setup_c
 
 ## Troubleshooting `No module named 'pynvml'`
 
-This is **not** a reboot issue. NVML Python bindings come from the **`nvidia-ml-py`** package (it imports as `pynvml`).
+Usually **not** a reboot issue. Common cause: `pip install` went into **`.venv`** but scripts used **system `python3`**.
 
 ```bash
 source .venv/bin/activate
+which python    # should be .../openllm-deploybench/.venv/bin/python
+which python3   # on some systems this is still /usr/bin/python3
+
 bash scripts/fix_nvml.sh
 bash scripts/check_environment.sh
+```
+
+Verify:
+
+```bash
+.venv/bin/python -c "import pynvml; print('OK')"
 ```
 
 Do **not** run `pip uninstall pynvml` unless you immediately reinstall `nvidia-ml-py`.

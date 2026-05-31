@@ -5,8 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
+# shellcheck source=lib_common.sh
+source "${SCRIPT_DIR}/lib_common.sh"
 
+PYTHON="$(deploybench_python "${PROJECT_ROOT}")"
 echo "=== Environment Check ==="
+echo "Using Python: ${PYTHON}"
 FAIL=0
 WARN=0
 
@@ -24,37 +28,30 @@ warn() {
   WARN=1
 }
 
-check "Python 3.10+" "python3 -c 'import sys; exit(0 if sys.version_info >= (3,10) else 1)'"
+check "Python 3.10+" "\"${PYTHON}\" -c 'import sys; exit(0 if sys.version_info >= (3,10) else 1)'"
 check "nvidia-smi" "command -v nvidia-smi"
 check "Virtual env" "[[ -d .venv ]]"
-check "deploybench import" "source .venv/bin/activate 2>/dev/null && python3 -c 'import deploybench' 2>/dev/null || python3 -c 'import sys; sys.path.insert(0,\"src\"); import deploybench'"
+check "deploybench import" "\"${PYTHON}\" -c 'import deploybench' 2>/dev/null || \"${PYTHON}\" -c 'import sys; sys.path.insert(0,\"src\"); import deploybench'"
 
-if [[ -d .venv ]]; then
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
-fi
-
-# nvidia-ml-py (imports as pynvml); avoid standalone deprecated pynvml package
-if python3 -c "
+# nvidia-ml-py (imports as pynvml) — must use venv python, not system python3
+if "${PYTHON}" -c "
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 import pynvml
+print(pynvml.__file__)
 " 2>/dev/null; then
-  if python3 -c "import importlib.metadata; importlib.metadata.version('nvidia-ml-py')" 2>/dev/null; then
-    echo "[OK] nvidia-ml-py (NVML)"
-  elif pip show pynvml 2>/dev/null | grep -q Name; then
-    warn "legacy pynvml installed — run: pip uninstall pynvml -y && pip install nvidia-ml-py"
-  else
-    echo "[OK] NVML Python bindings"
-  fi
+  echo "[OK] nvidia-ml-py (import pynvml via ${PYTHON})"
 else
-  echo "[FAIL] nvidia-ml-py / NVML bindings"
-  echo "       Fix: pip install nvidia-ml-py"
+  echo "[FAIL] cannot import pynvml with ${PYTHON}"
+  echo "       pip shows nvidia-ml-py in .venv but 'python3' may be system Python."
+  echo "       Fix:"
+  echo "         source .venv/bin/activate"
+  echo "         bash scripts/fix_nvml.sh"
   FAIL=1
 fi
 
-check "vllm" "python3 -c 'import vllm' 2>/dev/null || command -v vllm"
-check "transformers" "python3 -c 'import transformers'"
+check "vllm" "\"${PYTHON}\" -c 'import vllm' 2>/dev/null || command -v vllm"
+check "transformers" "\"${PYTHON}\" -c 'import transformers'"
 
 if command -v nvcc &>/dev/null; then
   echo "[OK] nvcc ($(nvcc --version | tail -1))"
@@ -66,7 +63,6 @@ if command -v nvcc &>/dev/null; then
 else
   echo "[FAIL] nvcc not found — required for vLLM 0.22+ (FlashInfer). Run:"
   echo "       bash scripts/setup_cuda_env.sh"
-  echo "       or: sudo apt install -y nvidia-cuda-toolkit build-essential ninja-build"
   FAIL=1
 fi
 
@@ -84,7 +80,7 @@ if command -v nvidia-smi &>/dev/null; then
     fi
   fi
 
-  NVML_ERR=$(python3 -c "
+  NVML_ERR=$("${PYTHON}" -c "
 import warnings
 warnings.filterwarnings('ignore', category=FutureWarning)
 try:
@@ -102,28 +98,20 @@ except Exception as e:
     warn "NVML Python init failed: ${NVML_ERR}"
     echo "       Benchmarks still run; hardware probe uses nvidia-smi fallback."
     if echo "${NVML_ERR}" | grep -qi "No module named"; then
-      echo "       Fix (missing Python package):"
-      echo "         source .venv/bin/activate"
-      echo "         bash scripts/fix_nvml.sh"
-      echo "         or: pip install --upgrade nvidia-ml-py"
-    elif echo "${NVML_ERR}" | grep -qi "mismatch\|NVML"; then
-      echo "       Fix (driver / NVML library mismatch):"
-      echo "         sudo reboot"
-      echo "         or: sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null; sudo modprobe nvidia"
-    else
-      echo "       See: bash scripts/fix_nvml.sh"
+      echo "       You are likely using system python3 instead of .venv/bin/python."
+      echo "       Fix: source .venv/bin/activate && bash scripts/fix_nvml.sh"
+    elif echo "${NVML_ERR}" | grep -qi "mismatch"; then
+      echo "       Fix driver mismatch: sudo reboot"
     fi
   fi
 fi
 
-# Disk space (need ~50GB+ for large models)
 AVAIL_GB=$(df -BG . | awk 'NR==2 {gsub(/G/,"",$4); print $4}')
 echo "Disk free: ${AVAIL_GB} GB"
 if [[ "${AVAIL_GB}" -lt 30 ]]; then
   warn "Low disk space; large models need 30GB+ free"
 fi
 
-# HF token
 if [[ -n "${HF_TOKEN:-}" || -n "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
   echo "[OK] Hugging Face token set"
 else

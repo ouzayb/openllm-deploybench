@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
+# shellcheck source=lib_common.sh
+source "${SCRIPT_DIR}/lib_common.sh"
 
 echo "=== OpenLLM DeployBench Install ==="
 
@@ -56,18 +58,16 @@ pip install -r requirements.txt
 echo "Installing package in editable mode..."
 pip install -e .
 
-# NVML: nvidia-ml-py provides `import pynvml` (install BEFORE any uninstall)
-pip install --upgrade "nvidia-ml-py>=12.535.133"
-python3 -c "import pynvml; print('nvidia-ml-py import OK')" || {
+PYTHON="$(deploybench_python "${PROJECT_ROOT}")"
+echo "Using Python for pip: ${PYTHON}"
+
+# NVML: nvidia-ml-py provides `import pynvml`
+"${PYTHON}" -m pip install --upgrade "nvidia-ml-py>=12.535.133"
+"${PYTHON}" -c "import pynvml; print('nvidia-ml-py import OK')" || {
   echo "ERROR: nvidia-ml-py install failed. Run: bash scripts/fix_nvml.sh"
   exit 1
 }
-# Only remove deprecated standalone PyPI package `pynvml` if nvidia-ml-py is already working
-if pip show pynvml &>/dev/null 2>&1 && ! pip show nvidia-ml-py &>/dev/null 2>&1; then
-  pip uninstall -y pynvml 2>/dev/null || true
-  pip install --upgrade "nvidia-ml-py>=12.535.133"
-fi
-python3 -c "import pynvml; pynvml.nvmlInit(); pynvml.nvmlShutdown(); print('NVML init OK')" || {
+"${PYTHON}" -c "import pynvml; pynvml.nvmlInit(); pynvml.nvmlShutdown(); print('NVML init OK')" || {
   echo "WARNING: NVML init failed (driver mismatch?). Hardware probe still uses nvidia-smi."
   echo "         Try: sudo reboot"
 }
@@ -95,9 +95,10 @@ else
 fi
 
 echo ""
-python3 -c "
+"${PYTHON}" -c "
 import sys
 print('Python:', sys.version)
+print('Executable:', sys.executable)
 for pkg in ('torch', 'vllm', 'transformers'):
     try:
         m = __import__(pkg)
