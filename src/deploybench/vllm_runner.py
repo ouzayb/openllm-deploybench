@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import shutil
@@ -11,13 +12,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from deploybench.gpu_monitor import GPUMonitor
-from deploybench.metrics import classify_error, gpu_summary_to_metrics, parse_vllm_bench_output
+from deploybench.metrics import (
+    classify_error,
+    gpu_summary_to_metrics,
+    parse_vllm_bench_output,
+    percentile,
+)
 from deploybench.result_schema import BenchmarkMetrics
 
 logger = logging.getLogger(__name__)
@@ -362,14 +369,25 @@ def start_vllm_server(
     )
     if legacy not in attempts:
         attempts.append(legacy)
-    env_attempts: list[tuple[str, dict[str, str] | None]] = [
-        ("default", _vllm_subprocess_env(use_v1_engine=use_v1_engine)),
-        ("VLLM_USE_V1=0", _vllm_subprocess_env(use_v1_engine=False)),
-        (
-            "VLLM_USE_V1=0,FlashInfer off",
-            _vllm_subprocess_env(use_v1_engine=False, use_flashinfer_sampler=False),
-        ),
-    ]
+    if use_v1_engine:
+        env_attempts = [
+            ("default", _vllm_subprocess_env(use_v1_engine=True)),
+            ("VLLM_USE_V1=0", _vllm_subprocess_env(use_v1_engine=False)),
+            (
+                "VLLM_USE_V1=0,FlashInfer off",
+                _vllm_subprocess_env(use_v1_engine=False, use_flashinfer_sampler=False),
+            ),
+        ]
+    else:
+        # Try native vLLM defaults first (matches manual `vllm serve`), then fallbacks
+        env_attempts = [
+            ("native", _vllm_subprocess_env()),
+            (
+                "legacy+no-flashinfer",
+                _vllm_subprocess_env(use_v1_engine=False, use_flashinfer_sampler=False),
+            ),
+            ("legacy", _vllm_subprocess_env(use_v1_engine=False)),
+        ]
     # Deduplicate identical env dicts
     seen: set[tuple[tuple[str, str], ...]] = set()
     unique_env_attempts: list[tuple[str, dict[str, str] | None]] = []
@@ -453,11 +471,7 @@ def _vllm_subprocess_env(
     else:
         env["VLLM_USE_FLASHINFER_SAMPLER"] = "1" if use_flashinfer_sampler else "0"
 
-    if use_v1_engine is None:
-        if "VLLM_USE_V1" not in env:
-            # V1 engine often hides worker errors; legacy engine is more stable for smoke runs
-            env["VLLM_USE_V1"] = os.environ.get("DEPLOYBENCH_VLLM_USE_V1", "0")
-    else:
+    if use_v1_engine is not None and "VLLM_USE_V1" not in env:
         env["VLLM_USE_V1"] = "1" if use_v1_engine else "0"
 
     if extra:
@@ -535,6 +549,145 @@ def stop_server() -> None:
     _cleanup_server()
 
 
+def _load_prompts_from_dataset(dataset_path: Path, num_prompts: int) -> list[str]:
+    prompts: list[str] = []
+    with dataset_path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            prompts.append(str(row["prompt"]))
+            if len(prompts) >= num_prompts:
+                break
+    return prompts
+
+
+def _is_instruct_model(hf_id: str) -> bool:
+    name = hf_id.lower()
+    return "instruct" in name or "chat" in name
+
+
+def _bench_serve_profiles(hf_id: str) -> list[dict[str, Any]]:
+    """CLI profiles to try; chat API first for Instruct models."""
+    if _is_instruct_model(hf_id):
+        return [
+            {
+                "label": "openai-chat",
+                "backend": "openai-chat",
+                "endpoint": "/v1/chat/completions",
+                "skip_template": False,
+            },
+            {
+                "label": "vllm-chat",
+                "backend": "vllm",
+                "endpoint": "/v1/chat/completions",
+                "skip_template": False,
+            },
+            {
+                "label": "vllm-completions",
+                "backend": "vllm",
+                "endpoint": "/v1/completions",
+                "skip_template": True,
+            },
+        ]
+    return [
+        {
+            "label": "vllm-completions",
+            "backend": "vllm",
+            "endpoint": "/v1/completions",
+            "skip_template": True,
+        },
+    ]
+
+
+def run_bench_serve_http(
+    hf_id: str,
+    dataset_path: Path,
+    num_prompts: int,
+    max_concurrency: int,
+    host: str,
+    port: int,
+    output_tokens: int,
+) -> dict[str, Any]:
+    """Direct OpenAI HTTP benchmark when `vllm bench serve` is unavailable or fails."""
+    prompts = _load_prompts_from_dataset(dataset_path, num_prompts)
+    if not prompts:
+        return {
+            "success": False,
+            "metrics": BenchmarkMetrics(),
+            "raw": {"error": "empty dataset", "returncode": 1},
+        }
+
+    modes = [
+        ("chat", f"http://{host}:{port}/v1/chat/completions"),
+        ("completion", f"http://{host}:{port}/v1/completions"),
+    ]
+    if not _is_instruct_model(hf_id):
+        modes.reverse()
+
+    last_error = ""
+    for mode, url in modes:
+        latencies_ms: list[float] = []
+        errors: list[str] = []
+
+        def one_request(prompt: str) -> float:
+            t0 = time.perf_counter()
+            if mode == "chat":
+                payload: dict[str, Any] = {
+                    "model": hf_id,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": output_tokens,
+                    "temperature": 0,
+                }
+            else:
+                payload = {
+                    "model": hf_id,
+                    "prompt": prompt,
+                    "max_tokens": output_tokens,
+                    "temperature": 0,
+                }
+            resp = requests.post(url, json=payload, timeout=1800)
+            resp.raise_for_status()
+            return (time.perf_counter() - t0) * 1000.0
+
+        t_batch = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
+            futures = {pool.submit(one_request, p): p for p in prompts}
+            for fut in as_completed(futures):
+                try:
+                    latencies_ms.append(fut.result())
+                except Exception as e:
+                    errors.append(str(e))
+        wall_s = time.perf_counter() - t_batch
+
+        if not errors and len(latencies_ms) == len(prompts):
+            metrics = BenchmarkMetrics(
+                requests_per_second=len(prompts) / wall_s if wall_s > 0 else 0.0,
+                e2e_latency_ms_p50=percentile(latencies_ms, 50),
+                e2e_latency_ms_p95=percentile(latencies_ms, 95),
+                e2e_latency_ms_p99=percentile(latencies_ms, 99),
+            )
+            return {
+                "success": True,
+                "metrics": metrics,
+                "raw": {
+                    "fallback": "http",
+                    "endpoint": url,
+                    "returncode": 0,
+                    "successful_requests": len(prompts),
+                },
+            }
+        last_error = errors[0] if errors else "unknown HTTP error"
+        logger.warning("HTTP bench mode=%s failed: %s", mode, last_error)
+
+    return {
+        "success": False,
+        "metrics": BenchmarkMetrics(),
+        "raw": {"fallback": "http", "error": last_error, "returncode": 1},
+    }
+
+
 def run_bench_serve(
     hf_id: str,
     dataset_path: Path,
@@ -546,46 +699,72 @@ def run_bench_serve(
     seed: int = 42,
     result_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Run vllm bench serve against a running server."""
-    with tempfile.TemporaryDirectory():
+    """Run vllm bench serve against a running server; HTTP fallback if CLI fails."""
+    common_args = [
+        "--model", hf_id,
+        "--dataset-name", "custom",
+        "--dataset-path", str(dataset_path),
+        "--num-prompts", str(num_prompts),
+        "--max-concurrency", str(max_concurrency),
+        "--port", str(port),
+        "--host", host,
+        "--seed", str(seed),
+        "--custom-output-len", str(output_tokens),
+    ]
+
+    last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}
+    for profile in _bench_serve_profiles(hf_id):
         bench_args = [
-            "--backend", "vllm",
-            "--model", hf_id,
-            "--endpoint", "/v1/completions",
-            "--dataset-name", "custom",
-            "--dataset-path", str(dataset_path),
-            "--num-prompts", str(num_prompts),
-            "--max-concurrency", str(max_concurrency),
-            "--port", str(port),
-            "--host", host,
-            "--seed", str(seed),
-            "--custom-output-len", str(output_tokens),
-            "--custom-skip-chat-template",
+            "--backend", profile["backend"],
+            "--endpoint", profile["endpoint"],
+            *common_args,
         ]
-        last_result = _run_command_attempts(
-            _build_vllm_bench_commands("serve", bench_args),
-            timeout=3600,
+        if profile["skip_template"]:
+            bench_args.append("--custom-skip-chat-template")
+        commands = _build_vllm_bench_commands("serve", bench_args)
+        last_result = _run_command_attempts(commands, timeout=3600)
+        last_result["bench_profile"] = profile["label"]
+        if last_result.get("returncode") == 0:
+            break
+        logger.warning(
+            "vllm bench serve profile=%s failed (rc=%s): %s",
+            profile["label"],
+            last_result.get("returncode"),
+            (last_result.get("stderr") or last_result.get("stdout") or "")[:300],
         )
 
-        metrics = parse_vllm_bench_output(
-            last_result.get("stdout", ""),
-            last_result.get("stderr", ""),
-        )
+    metrics = parse_vllm_bench_output(
+        last_result.get("stdout", ""),
+        last_result.get("stderr", ""),
+    )
 
-        # Try loading saved result JSON if vLLM wrote one
-        if result_dir:
-            for p in sorted(result_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
-                try:
-                    import json
+    if result_dir and last_result.get("returncode") == 0:
+        for p in sorted(result_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                metrics = parse_vllm_bench_output(json.dumps(data))
+                last_result["saved_result"] = str(p)
+                break
+            except Exception:
+                pass
 
-                    data = json.loads(p.read_text(encoding="utf-8"))
-                    metrics = parse_vllm_bench_output(json.dumps(data))
-                    last_result["saved_result"] = str(p)
-                    break
-                except Exception:
-                    pass
+    if last_result.get("returncode") == 0:
+        return {"success": True, "metrics": metrics, "raw": last_result}
 
-        return {"metrics": metrics, "raw": last_result}
+    logger.warning("vllm bench serve failed; using HTTP fallback")
+    http_out = run_bench_serve_http(
+        hf_id=hf_id,
+        dataset_path=dataset_path,
+        num_prompts=num_prompts,
+        max_concurrency=max_concurrency,
+        host=host,
+        port=port,
+        output_tokens=output_tokens,
+    )
+    http_out["raw"] = {**last_result, "http_fallback": http_out.get("raw", {})}
+    if http_out.get("success"):
+        http_out["raw"]["returncode"] = 0
+    return http_out
 
 
 def run_bench_throughput_offline(

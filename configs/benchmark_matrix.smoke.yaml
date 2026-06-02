@@ -9,6 +9,7 @@ runtime:
   tensor_parallel_size: "auto"
   gpu_memory_utilization: 0.90
   enforce_eager: true
+  # false = try native vLLM first, then legacy fallbacks if startup fails
   use_v1_engine: false
   seed: 42
   port: 8000

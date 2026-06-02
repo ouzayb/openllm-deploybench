@@ -199,6 +199,24 @@ vllm bench serve --help
 
 Then re-run `deploybench run-serving`.
 
+## Manual `vllm serve` works but DeployBench fails?
+
+A bare `vllm serve` (no args) loads the **default tiny model** (`Qwen/Qwen3-0.6B`) with **V1 engine + FlashInfer** — that validates drivers and CUDA, not your benchmark model.
+
+DeployBench smoke uses **`Qwen/Qwen2.5-7B-Instruct`** with `--max-model-len 8192`. Test the same stack manually:
+
+```bash
+source .venv/bin/activate
+pkill -9 -f vllm || true
+vllm serve Qwen/Qwen2.5-7B-Instruct --dtype bfloat16 --max-model-len 8192 --enforce-eager
+# other terminal:
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen/Qwen2.5-7B-Instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":32}'
+```
+
+After `git pull`, `deploybench run-serving` falls back to **direct HTTP** benchmarking if `vllm bench serve` fails.
+
 ## Troubleshooting vLLM: `Engine core initialization failed`
 
 The JSONL error often shows only the **APIServer** traceback. The real cause is usually earlier in the server log from **EngineCore** (FlashInfer JIT, CUDA toolkit mismatch, OOM, or v1 engine bugs).

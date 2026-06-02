@@ -283,12 +283,18 @@ def run_serving_benchmark(
                             for k, v in gpu_summary_to_metrics(summary).items():
                                 setattr(metrics, k, v)
                             raw = bench.get("raw", {})
-                            success = raw.get("returncode") == 0
+                            success = bench.get(
+                                "success", raw.get("returncode") == 0
+                            )
                             et = em = None
                             if not success:
-                                et, em = classify_error(
-                                    raw.get("stderr", "") or "bench serve failed"
+                                err_text = (
+                                    raw.get("stderr", "")
+                                    or raw.get("stdout", "")
+                                    or raw.get("http_fallback", {}).get("error", "")
+                                    or "bench serve failed"
                                 )
+                                et, em = classify_error(err_text)
 
                         result = ServingBenchmarkResult(
                             run_id=run_id,
