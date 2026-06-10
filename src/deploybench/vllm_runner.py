@@ -459,11 +459,14 @@ def _vllm_subprocess_env(
         env["LD_LIBRARY_PATH"] = f"{lib}:{env.get('LD_LIBRARY_PATH', '')}"
 
     if use_flashinfer_sampler is None:
-        if "VLLM_USE_FLASHINFER_SAMPLER" not in env:
-            if cuda_home and shutil.which("nvcc"):
-                env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
-            else:
-                env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+        # nvcc from apt (CUDA 12) often breaks FlashInfer JIT on H200 (CUB FlagHeads).
+        # Default off even if scripts/env.cuda.sh still has =1; opt in via DEPLOYBENCH_ENABLE_FLASHINFER_SAMPLER=1
+        enable_fi = os.environ.get("DEPLOYBENCH_ENABLE_FLASHINFER_SAMPLER", "").strip().lower()
+        if enable_fi in ("1", "true", "yes") and cuda_home and shutil.which("nvcc"):
+            env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+        else:
+            env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+            if not shutil.which("nvcc"):
                 logger.warning(
                     "nvcc not found; VLLM_USE_FLASHINFER_SAMPLER=0. "
                     "Run: bash scripts/setup_cuda_env.sh"
@@ -710,6 +713,11 @@ def run_bench_serve(
         "--host", host,
         "--seed", str(seed),
         "--custom-output-len", str(output_tokens),
+        # Ask vLLM for the percentiles/metrics we report; otherwise it only
+        # emits Mean/Median/P99 for TTFT/TPOT/ITL and no E2EL block at all,
+        # leaving p95 and e2e_latency_* unparseable.
+        "--percentile-metrics", "ttft,tpot,itl,e2el",
+        "--metric-percentiles", "50,95,99",
     ]
 
     last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}

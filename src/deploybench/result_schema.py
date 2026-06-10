@@ -8,24 +8,26 @@ from pydantic import BaseModel, Field
 
 
 class BenchmarkMetrics(BaseModel):
-    requests_per_second: float = 0.0
-    output_tokens_per_second: float = 0.0
-    total_tokens_per_second: float = 0.0
-    ttft_ms_p50: float = 0.0
-    ttft_ms_p95: float = 0.0
-    ttft_ms_p99: float = 0.0
-    tpot_ms_p50: float = 0.0
-    tpot_ms_p95: float = 0.0
-    tpot_ms_p99: float = 0.0
-    e2e_latency_ms_p50: float = 0.0
-    e2e_latency_ms_p95: float = 0.0
-    e2e_latency_ms_p99: float = 0.0
-    peak_vram_gb: float = 0.0
-    avg_power_watts: float = 0.0
-    peak_power_watts: float = 0.0
-    energy_wh: float = 0.0
-    avg_gpu_utilization: float = 0.0
-    max_temperature_c: float = 0.0
+    # None means the metric was not reported by the benchmark (e.g. a percentile
+    # vLLM did not emit). It is serialized as JSON null rather than a misleading 0.0.
+    requests_per_second: float | None = None
+    output_tokens_per_second: float | None = None
+    total_tokens_per_second: float | None = None
+    ttft_ms_p50: float | None = None
+    ttft_ms_p95: float | None = None
+    ttft_ms_p99: float | None = None
+    tpot_ms_p50: float | None = None
+    tpot_ms_p95: float | None = None
+    tpot_ms_p99: float | None = None
+    e2e_latency_ms_p50: float | None = None
+    e2e_latency_ms_p95: float | None = None
+    e2e_latency_ms_p99: float | None = None
+    peak_vram_gb: float | None = None
+    avg_power_watts: float | None = None
+    peak_power_watts: float | None = None
+    energy_wh: float | None = None
+    avg_gpu_utilization: float | None = None
+    max_temperature_c: float | None = None
 
 
 class GPUSample(BaseModel):
@@ -42,12 +44,12 @@ class GPUSample(BaseModel):
 
 
 class GPUSampleSummary(BaseModel):
-    peak_vram_gb: float = 0.0
-    average_power_watts: float = 0.0
-    peak_power_watts: float = 0.0
-    average_gpu_utilization: float = 0.0
-    max_temperature_c: float = 0.0
-    energy_wh: float = 0.0
+    peak_vram_gb: float | None = None
+    average_power_watts: float | None = None
+    peak_power_watts: float | None = None
+    average_gpu_utilization: float | None = None
+    max_temperature_c: float | None = None
+    energy_wh: float | None = None
 
 
 class ReproducibilityMeta(BaseModel):

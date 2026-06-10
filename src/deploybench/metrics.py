@@ -17,16 +17,16 @@ def percentile(values: list[float], p: float) -> float:
     return float(np.percentile(values, p))
 
 
-def compute_energy_wh(samples: list[GPUSample], interval_sec: float) -> float:
+def compute_energy_wh(samples: list[GPUSample], interval_sec: float) -> float | None:
     """Approximate energy from average power across GPUs per interval."""
     if not samples or interval_sec <= 0:
-        return 0.0
+        return None
     by_ts: dict[str, list[float]] = {}
     for s in samples:
         if s.power_draw_watts is not None:
             by_ts.setdefault(s.timestamp, []).append(s.power_draw_watts)
     if not by_ts:
-        return 0.0
+        return None
     total_j = 0.0
     for powers in by_ts.values():
         avg_w = sum(powers) / len(powers)
@@ -47,16 +47,16 @@ def summarize_gpu_samples(
     temps = [s.temperature_c for s in samples if s.temperature_c is not None]
 
     return GPUSampleSummary(
-        peak_vram_gb=max(mem_gb) if mem_gb else 0.0,
-        average_power_watts=float(np.mean(powers)) if powers else 0.0,
-        peak_power_watts=max(powers) if powers else 0.0,
-        average_gpu_utilization=float(np.mean(utils)) if utils else 0.0,
-        max_temperature_c=max(temps) if temps else 0.0,
+        peak_vram_gb=max(mem_gb) if mem_gb else None,
+        average_power_watts=float(np.mean(powers)) if powers else None,
+        peak_power_watts=max(powers) if powers else None,
+        average_gpu_utilization=float(np.mean(utils)) if utils else None,
+        max_temperature_c=max(temps) if temps else None,
         energy_wh=compute_energy_wh(samples, interval_sec),
     )
 
 
-def gpu_summary_to_metrics(summary: GPUSampleSummary) -> dict[str, float]:
+def gpu_summary_to_metrics(summary: GPUSampleSummary) -> dict[str, float | None]:
     return {
         "peak_vram_gb": summary.peak_vram_gb,
         "avg_power_watts": summary.average_power_watts,
@@ -87,13 +87,14 @@ def parse_vllm_bench_output(stdout: str, stderr: str = "") -> BenchmarkMetrics:
         "requests_per_second": r"Request throughput \(req/s\):\s*([\d.]+)",
         "output_tokens_per_second": r"Output token throughput \(tok/s\):\s*([\d.]+)",
         "total_tokens_per_second": r"Total token throughput \(tok/s\):\s*([\d.]+)",
-        "ttft_ms_p50": r"Mean TTFT \(ms\):\s*([\d.]+)|TTFT \(ms\).*?p50[:\s]+([\d.]+)",
+        # p50 = the median vLLM reports (P50/Median), NOT the mean.
+        "ttft_ms_p50": r"P50 TTFT \(ms\):\s*([\d.]+)|Median TTFT \(ms\):\s*([\d.]+)",
         "ttft_ms_p95": r"P95 TTFT \(ms\):\s*([\d.]+)",
         "ttft_ms_p99": r"P99 TTFT \(ms\):\s*([\d.]+)",
-        "tpot_ms_p50": r"Mean TPOT \(ms\):\s*([\d.]+)",
+        "tpot_ms_p50": r"P50 TPOT \(ms\):\s*([\d.]+)|Median TPOT \(ms\):\s*([\d.]+)",
         "tpot_ms_p95": r"P95 TPOT \(ms\):\s*([\d.]+)",
         "tpot_ms_p99": r"P99 TPOT \(ms\):\s*([\d.]+)",
-        "e2e_latency_ms_p50": r"Mean E2EL \(ms\):\s*([\d.]+)",
+        "e2e_latency_ms_p50": r"P50 E2EL \(ms\):\s*([\d.]+)|Median E2EL \(ms\):\s*([\d.]+)",
         "e2e_latency_ms_p95": r"P95 E2EL \(ms\):\s*([\d.]+)",
         "e2e_latency_ms_p99": r"P99 E2EL \(ms\):\s*([\d.]+)",
     }

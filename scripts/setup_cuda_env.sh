@@ -72,9 +72,10 @@ write_env_file() {
 export CUDA_HOME="${cuda_home}"
 export PATH="${cuda_home}/bin:\${PATH}"
 export LD_LIBRARY_PATH="${lib_path}:\${LD_LIBRARY_PATH:-}"
-export VLLM_USE_FLASHINFER_SAMPLER=1
+# FlashInfer JIT needs nvcc/CUB matching the driver; apt toolkit on H200 often fails (FlagHeads).
+export VLLM_USE_FLASHINFER_SAMPLER=0
 EOF
-  echo "Wrote ${ENV_FILE} (CUDA_HOME=${cuda_home})"
+  echo "Wrote ${ENV_FILE} (CUDA_HOME=${cuda_home}, VLLM_USE_FLASHINFER_SAMPLER=0)"
 }
 
 write_fallback_env() {

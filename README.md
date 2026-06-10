@@ -207,6 +207,7 @@ DeployBench smoke uses **`Qwen/Qwen2.5-7B-Instruct`** with `--max-model-len 8192
 
 ```bash
 source .venv/bin/activate
+export VLLM_USE_FLASHINFER_SAMPLER=0   # required if FlashInfer JIT fails (CUB FlagHeads on apt nvcc)
 pkill -9 -f vllm || true
 vllm serve Qwen/Qwen2.5-7B-Instruct --dtype bfloat16 --max-model-len 8192 --enforce-eager
 # other terminal:
@@ -228,6 +229,18 @@ grep -E 'ERROR|EngineCore|nvcc|FlashInfer|CUDA|OOM|Traceback' \
   results/serving/logs/serve_qwen2_5_7b_instruct_8192.log | tail -80
 ```
 
+**FlashInfer JIT: `BlockAdjacentDifference ... has no member FlagHeads`**
+
+vLLM 0.22 enables FlashInfer for top-k/top-p sampling and JIT-compiles kernels with `nvcc`. Ubuntu **`nvidia-cuda-toolkit`** (CUDA 12) headers often **do not match** the bundled CUB in FlashInfer on **H200 (`sm_90a`)**, so compilation fails during the profile/sampler step — even though a bare `vllm serve` on the tiny default model may work.
+
+**Fix (immediate):**
+
+```bash
+export VLLM_USE_FLASHINFER_SAMPLER=0
+pkill -9 -f vllm || true
+vllm serve Qwen/Qwen2.5-7B-Instruct --dtype bfloat16 --max-model-len 8192 --enforce-eager
+```
+
 **Quick manual test (legacy engine + no FlashInfer JIT):**
 
 ```bash
@@ -238,7 +251,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct --max-model-len 8192 --enforce-eager
 # (uses .venv/bin/vllm — do not use `python -m vllm`, that module has no __main__)
 ```
 
-After `git pull`, `deploybench run-serving` retries automatically with `VLLM_USE_V1=0` and FlashInfer disabled. Smoke config sets `enforce_eager: true` and `use_v1_engine: false`.
+After `git pull`, DeployBench defaults **`VLLM_USE_FLASHINFER_SAMPLER=0`** when `nvcc` is present. To force FlashInfer on a machine with a matching CUDA 13 toolkit: `export DEPLOYBENCH_ENABLE_FLASHINFER_SAMPLER=1`. `deploybench run-serving` also retries with `VLLM_USE_V1=0` and FlashInfer disabled. Smoke config sets `enforce_eager: true` and `use_v1_engine: false`.
 
 If it still fails, check for stale GPU processes: `pkill -9 -f vllm; nvidia-smi`
 
@@ -257,7 +270,7 @@ deploybench run-serving ...
 
 Re-run `bash scripts/install_ubuntu.sh` on a fresh machine — it calls `setup_cuda_env.sh` automatically.
 
-**Emergency fallback** (no nvcc, slower sampling): `export VLLM_USE_FLASHINFER_SAMPLER=0`
+**Default on H200 with apt toolkit:** `export VLLM_USE_FLASHINFER_SAMPLER=0` (sampling uses PyTorch path; slightly slower, stable). Re-run `bash scripts/setup_cuda_env.sh` after pull to regenerate `scripts/env.cuda.sh` with this default.
 
 ## Troubleshooting `No module named 'pynvml'`
 
