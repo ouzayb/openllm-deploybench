@@ -6,6 +6,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -341,6 +342,42 @@ def build_serve_command_legacy(
     return cmd
 
 
+def _parse_attention_backend(log_path: Path) -> str | None:
+    """Best-effort extraction of the attention backend vLLM selected (varies per GPU)."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    m = re.search(r"Using (.+?) backend", text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"attn[_ ]backend[=:]\s*([A-Za-z0-9_]+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _server_config(
+    label: str,
+    cmd: list[str],
+    env: dict[str, str],
+    enforce_eager: bool,
+    log_path: Path,
+    *,
+    reproducible: bool,
+) -> dict[str, Any]:
+    """Record the configuration a vLLM server actually launched with."""
+    return {
+        "reproducible": reproducible,
+        "env_label": label,
+        "vllm_use_v1": env.get("VLLM_USE_V1"),
+        "flashinfer_sampler": env.get("VLLM_USE_FLASHINFER_SAMPLER"),
+        "enforce_eager": enforce_eager,
+        "attention_backend": _parse_attention_backend(log_path),
+        "serve_command": " ".join(cmd),
+    }
+
+
 def start_vllm_server(
     hf_id: str,
     dtype: str,
@@ -355,8 +392,42 @@ def start_vllm_server(
     log_path: Path,
     startup_timeout_sec: int = 600,
     use_v1_engine: bool = False,
-) -> tuple[bool, str, list[str]]:
-    """Try vllm serve (0.22+), then legacy api_server; retry with stable env fallbacks."""
+    reproducible: bool = False,
+    use_flashinfer_sampler: bool | None = None,
+) -> tuple[bool, str, list[str], dict[str, Any]]:
+    """Start a vLLM server and return (ok, error, command, server_config).
+
+    In reproducible mode a single pinned (command, env) is launched and the
+    server must come up or the run fails: no command/env fallback cascade, so
+    every device measures the same engine configuration. `server_config`
+    records what actually ran (V1 engine, FlashInfer sampler, enforce_eager,
+    attention backend) so each result row is self-documenting.
+    """
+    if reproducible:
+        flashinfer_on = bool(use_flashinfer_sampler)  # None -> off (portable)
+        cmd = build_serve_command(
+            hf_id, dtype, max_model_len, tensor_parallel_size,
+            gpu_memory_utilization, quantization, trust_remote_code,
+            port, host, enforce_eager,
+        )
+        env = _vllm_subprocess_env(
+            use_v1_engine=use_v1_engine,
+            use_flashinfer_sampler=flashinfer_on,
+        )
+        ok, err = start_server(
+            cmd, log_path, startup_timeout_sec, host, port, vllm_env=env,
+        )
+        server_config = _server_config(
+            "pinned", cmd, env, enforce_eager, log_path, reproducible=True
+        )
+        if not ok:
+            logger.error(
+                "Reproducible mode: pinned vLLM config failed to start; "
+                "NOT falling back (strict). %s",
+                err.splitlines()[0] if err else "",
+            )
+        return ok, err, cmd, server_config
+
     attempts = build_serve_command_variants(
         hf_id, dtype, max_model_len, tensor_parallel_size,
         gpu_memory_utilization, quantization, trust_remote_code,
@@ -413,7 +484,11 @@ def start_vllm_server(
             if ok:
                 if label != "default":
                     logger.info("Server started with fallback env: %s", label)
-                return True, "", cmd
+                server_config = _server_config(
+                    label, cmd, vllm_env or {}, enforce_eager, log_path,
+                    reproducible=False,
+                )
+                return True, "", cmd, server_config
             last_err = err
             logger.warning(
                 "Server start failed (cmd=%s env=%s): %s",
@@ -421,7 +496,7 @@ def start_vllm_server(
                 label,
                 err.splitlines()[0] if err else "",
             )
-    return False, last_err, attempts[-1]
+    return False, last_err, attempts[-1], {"reproducible": False, "env_label": None}
 
 
 def _resolve_cuda_home() -> str | None:
@@ -701,8 +776,15 @@ def run_bench_serve(
     output_tokens: int,
     seed: int = 42,
     result_dir: Path | None = None,
+    reproducible: bool = False,
+    num_warmups: int = 0,
 ) -> dict[str, Any]:
-    """Run vllm bench serve against a running server; HTTP fallback if CLI fails."""
+    """Run vllm bench serve against a running server.
+
+    In reproducible mode only the first (canonical) bench profile is used and
+    there is NO HTTP fallback: if `vllm bench serve` fails the run fails, so a
+    paper never mixes CLI numbers with the different client-side HTTP method.
+    """
     common_args = [
         "--model", hf_id,
         "--dataset-name", "custom",
@@ -719,9 +801,15 @@ def run_bench_serve(
         "--percentile-metrics", "ttft,tpot,itl,e2el",
         "--metric-percentiles", "50,95,99",
     ]
+    if num_warmups > 0:
+        common_args.extend(["--num-warmups", str(num_warmups)])
+
+    profiles = _bench_serve_profiles(hf_id)
+    if reproducible:
+        profiles = profiles[:1]  # pin one profile; do not vary endpoint per device
 
     last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}
-    for profile in _bench_serve_profiles(hf_id):
+    for profile in profiles:
         bench_args = [
             "--backend", profile["backend"],
             "--endpoint", profile["endpoint"],
@@ -758,6 +846,13 @@ def run_bench_serve(
 
     if last_result.get("returncode") == 0:
         return {"success": True, "metrics": metrics, "raw": last_result}
+
+    if reproducible:
+        logger.error(
+            "Reproducible mode: `vllm bench serve` failed and HTTP fallback is "
+            "disabled (strict). Recording failure."
+        )
+        return {"success": False, "metrics": metrics, "raw": last_result}
 
     logger.warning("vllm bench serve failed; using HTTP fallback")
     http_out = run_bench_serve_http(

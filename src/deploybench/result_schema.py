@@ -95,6 +95,11 @@ class ServingBenchmarkResult(BaseModel):
 
     metrics: BenchmarkMetrics = Field(default_factory=BenchmarkMetrics)
     reproducibility: ReproducibilityMeta = Field(default_factory=ReproducibilityMeta)
+    # The configuration that actually produced this row (engine V1 on/off,
+    # FlashInfer sampler, enforce_eager, attention backend, bench profile,
+    # whether strict reproducible mode was used). Self-documents every result so
+    # cross-device numbers can be verified rather than assumed comparable.
+    server_config: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

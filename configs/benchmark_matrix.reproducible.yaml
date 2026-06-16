@@ -1,0 +1,58 @@
+# Canonical configuration for paper-grade, cross-device-comparable results.
+#
+# Key idea: pin ONE engine configuration and fail loudly instead of silently
+# falling back to a different engine/sampler/bench method. Every device must run
+# the exact same pipeline or the run errors out, so numbers are comparable.
+#
+# Use the SAME vLLM version on every device and keep this file identical across
+# machines (only the --hardware-config should differ).
+
+benchmark:
+  name: "openllm_deploybench_reproducible"
+  output_format: "jsonl"
+
+runtime:
+  engine: "vllm"
+  mode: "online"
+  tensor_parallel_size: "auto"   # resolves to GPU count per device; pin an int if you want it fixed
+  gpu_memory_utilization: 0.90
+  seed: 42
+  port: 8000
+  host: "127.0.0.1"
+  server_startup_timeout_sec: 900   # generous: a cold FlashInfer/torch.compile build must not time out
+
+  # --- Reproducibility controls ---
+  reproducible: true              # no command/env fallback cascade; no HTTP bench fallback; fail loudly
+  use_v1_engine: true             # modern vLLM scheduler (what gets deployed)
+  use_flashinfer_sampler: false   # portable: avoids per-device FlashInfer JIT differences (CUB/nvcc)
+  enforce_eager: false            # CUDA graphs ON for representative deployment throughput
+  num_warmups: 1                  # absorb first-call JIT / graph capture before measuring
+
+models:
+  - model_id: "qwen2_5_7b_instruct"
+    quantization: null
+    dtype: "bfloat16"
+    max_model_len:
+      - 8192
+
+workloads:
+  - id: "chat_512_256"
+    type: "synthetic"
+    template: "chat"
+    prompt_tokens: 512
+    output_tokens: 256
+    num_prompts: 128
+    concurrency:
+      - 1
+      - 4
+      - 8
+      - 16
+
+long_context:
+  enabled: false
+
+monitoring:
+  sample_interval_seconds: 0.5
+  log_gpu_power: true
+  log_gpu_memory: true
+  log_gpu_utilization: true

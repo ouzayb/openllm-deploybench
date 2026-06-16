@@ -167,11 +167,14 @@ def run_serving_benchmark(
                 host=rt.host,
                 enforce_eager=rt.enforce_eager,
                 use_v1_engine=rt.use_v1_engine,
+                reproducible=rt.reproducible,
+                use_flashinfer_sampler=rt.use_flashinfer_sampler,
             )
 
             # Load server once per model+max_model_len for online mode
             server_loaded = False
             skip_model_len = False
+            server_config: dict[str, Any] = {}
             server_log = logs_dir / f"serve_{model_entry.model_id}_{max_model_len}.log"
 
             for workload in matrix.workloads:
@@ -228,7 +231,7 @@ def run_serving_benchmark(
                             from deploybench.vllm_runner import start_vllm_server
 
                             if not server_loaded:
-                                ok, err, serve_cmd = start_vllm_server(
+                                ok, err, serve_cmd, server_config = start_vllm_server(
                                     log_path=server_log,
                                     startup_timeout_sec=rt.server_startup_timeout_sec,
                                     **serve_kwargs,
@@ -255,6 +258,7 @@ def run_serving_benchmark(
                                         num_prompts=workload.num_prompts,
                                         concurrency=concurrency,
                                         metrics=BenchmarkMetrics(),
+                                        server_config=server_config,
                                         raw={"server_log": str(server_log)},
                                     )
                                     append_jsonl(output_path, result)
@@ -276,6 +280,8 @@ def run_serving_benchmark(
                                 port=rt.port,
                                 output_tokens=workload.output_tokens,
                                 seed=rt.seed,
+                                reproducible=rt.reproducible,
+                                num_warmups=rt.num_warmups,
                             )
                             samples = monitor.stop()
                             summary = monitor.summarize(samples)
@@ -295,6 +301,8 @@ def run_serving_benchmark(
                                     or "bench serve failed"
                                 )
                                 et, em = classify_error(err_text)
+                            if isinstance(raw, dict) and raw.get("bench_profile"):
+                                server_config["bench_profile"] = raw["bench_profile"]
 
                         result = ServingBenchmarkResult(
                             run_id=run_id,
@@ -316,6 +324,7 @@ def run_serving_benchmark(
                             num_prompts=workload.num_prompts,
                             concurrency=concurrency,
                             metrics=metrics if isinstance(metrics, BenchmarkMetrics) else metrics,
+                            server_config=server_config,
                             raw=raw if isinstance(raw, dict) else {"output": raw},
                         )
                         append_jsonl(output_path, result)

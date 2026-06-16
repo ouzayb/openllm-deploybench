@@ -68,6 +68,18 @@ class RuntimeConfig(BaseModel):
     host: str = "127.0.0.1"
     server_startup_timeout_sec: int = 600
 
+    # Paper-grade reproducibility: pin one engine config and fail loudly instead
+    # of silently cascading through command/env fallbacks (which can otherwise
+    # measure a different engine on different devices). Also disables the HTTP
+    # bench fallback so only `vllm bench serve` numbers are ever recorded.
+    reproducible: bool = False
+    # Explicit FlashInfer sampler choice. None = portable default (off) in
+    # reproducible mode; in non-strict mode None keeps the auto/opt-in behavior.
+    use_flashinfer_sampler: bool | None = None
+    # Warmup requests before the measured benchmark (absorbs first-call JIT /
+    # CUDA-graph capture so timing is not polluted).
+    num_warmups: int = 0
+
 
 class MatrixModelEntry(BaseModel):
     model_id: str

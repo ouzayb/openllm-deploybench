@@ -148,6 +148,32 @@ deploybench run-serving \
   --output-dir results/serving
 ```
 
+#### Reproducible mode (for cross-device / paper results)
+
+By default the runner uses a **fallback cascade**: if the pinned `vllm serve`
+config doesn't start, it silently retries with a different engine/sampler (V1↔V0,
+FlashInfer on/off), and if `vllm bench serve` fails it falls back to a
+client-side HTTP benchmark. That maximizes "it runs", but different devices can
+silently end up measuring **different engines**, which is not comparable.
+
+For paper-grade numbers use `configs/benchmark_matrix.reproducible.yaml`, which
+sets in `runtime:`:
+
+```yaml
+reproducible: true            # no command/env fallback; no HTTP bench fallback; fail loudly
+use_v1_engine: true           # modern vLLM scheduler
+use_flashinfer_sampler: false # portable across devices (avoids per-device FlashInfer JIT)
+enforce_eager: false          # CUDA graphs on for representative throughput
+num_warmups: 1                # absorb first-call JIT / graph capture
+```
+
+In this mode a single pinned (command, env) is launched and the run **fails
+loudly** instead of downgrading. Every result row gains a `server_config` block
+recording what actually ran (`vllm_use_v1`, `flashinfer_sampler`, `enforce_eager`,
+`attention_backend`, `bench_profile`), so each row is self-documenting. Keep this
+config identical on every machine — only `--hardware-config` should differ — and
+use the same vLLM version everywhere.
+
 ### Long-context (needle-in-a-haystack)
 
 ```bash
