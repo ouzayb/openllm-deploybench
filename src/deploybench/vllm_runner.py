@@ -350,7 +350,8 @@ def _parse_attention_backend(log_path: Path) -> str | None:
         return None
     m = re.search(r"Using (.+?) backend", text)
     if m:
-        return m.group(1).strip()
+        # Strip a trailing "attention" word, e.g. "FLASH_ATTN attention" -> "FLASH_ATTN".
+        return re.sub(r"\s+attention$", "", m.group(1).strip(), flags=re.IGNORECASE)
     m = re.search(r"attn[_ ]backend[=:]\s*([A-Za-z0-9_]+)", text, re.IGNORECASE)
     if m:
         return m.group(1)
@@ -801,8 +802,14 @@ def run_bench_serve(
         "--percentile-metrics", "ttft,tpot,itl,e2el",
         "--metric-percentiles", "50,95,99",
     ]
-    if num_warmups > 0:
-        common_args.extend(["--num-warmups", str(num_warmups)])
+    # Warm up at least as many requests as the concurrency so CUDA-graph capture
+    # for the run's batch shape happens during warmup, not in the measured run
+    # (otherwise the first batch pays the capture cost and inflates p95/p99).
+    effective_warmups = num_warmups
+    if reproducible:
+        effective_warmups = max(num_warmups, max_concurrency)
+    if effective_warmups > 0:
+        common_args.extend(["--num-warmups", str(effective_warmups)])
 
     profiles = _bench_serve_profiles(hf_id)
     if reproducible:

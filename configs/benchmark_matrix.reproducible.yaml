@@ -26,7 +26,10 @@ runtime:
   use_v1_engine: true             # modern vLLM scheduler (what gets deployed)
   use_flashinfer_sampler: false   # portable: avoids per-device FlashInfer JIT differences (CUB/nvcc)
   enforce_eager: false            # CUDA graphs ON for representative deployment throughput
-  num_warmups: 1                  # absorb first-call JIT / graph capture before measuring
+  # Warmup requests before measuring (absorbs JIT / CUDA-graph capture). In
+  # reproducible mode the runner auto-raises this to at least each run's
+  # concurrency so every batch shape is captured during warmup.
+  num_warmups: 32
 
 models:
   - model_id: "qwen2_5_7b_instruct"

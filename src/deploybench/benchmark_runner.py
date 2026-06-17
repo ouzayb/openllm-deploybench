@@ -267,6 +267,16 @@ def run_serving_benchmark(
                                     skip_model_len = True
                                     break
                                 server_loaded = True
+                                # env_vars is a parent-shell snapshot and can
+                                # disagree with what the server subprocess
+                                # actually launched with; make the recorded env
+                                # reflect the real (server_config) values.
+                                if server_config.get("flashinfer_sampler") is not None:
+                                    repro.env_vars["VLLM_USE_FLASHINFER_SAMPLER"] = (
+                                        server_config["flashinfer_sampler"]
+                                    )
+                                if server_config.get("vllm_use_v1") is not None:
+                                    repro.env_vars["VLLM_USE_V1"] = server_config["vllm_use_v1"]
 
                             monitor.start()
                             from deploybench.vllm_runner import run_bench_serve
