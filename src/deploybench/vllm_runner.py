@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -404,6 +405,10 @@ def start_vllm_server(
     records what actually ran (V1 engine, FlashInfer sampler, enforce_eager,
     attention backend) so each result row is self-documenting.
     """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if s.connect_ex((host, port)) == 0:
+            return False, f"Port {port} is already in use by another process", [], {}
+            
     if reproducible:
         flashinfer_on = bool(use_flashinfer_sampler)  # None -> off (portable)
         cmd = build_serve_command(

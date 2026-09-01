@@ -79,6 +79,36 @@ def _write_failure(
     )
     append_jsonl(output_path, result)
 
+def should_stop_early(
+    current_metrics: Any,
+    prev_metrics: Any | None,
+    early_stop_cfg: Any | None,
+    step_index: int,
+) -> tuple[bool, str]:
+    """Evaluates saturation metrics to determine whether to stop sweeping concurrency."""
+    if not early_stop_cfg or not getattr(early_stop_cfg, "enabled", False):
+        return False, ""
+
+    min_steps = getattr(early_stop_cfg, "min_concurrency_steps", 3)
+    if step_index < min_steps:
+        return False, ""
+
+    max_ttft = getattr(early_stop_cfg, "max_ttft_p99_ms", 15000.0)
+    curr_ttft_p99 = getattr(current_metrics, "ttft_p99_ms", None) or getattr(current_metrics, "ttft_mean_ms", 0.0)
+    if curr_ttft_p99 and curr_ttft_p99 > max_ttft:
+        return True, f"P99 TTFT ({curr_ttft_p99:.1f}ms) exceeded threshold ({max_ttft:.1f}ms)"
+
+    if prev_metrics:
+        prev_tps = getattr(prev_metrics, "generation_tokens_per_second", 0.0) or getattr(prev_metrics, "tokens_per_second", 0.0)
+        curr_tps = getattr(current_metrics, "generation_tokens_per_second", 0.0) or getattr(current_metrics, "tokens_per_second", 0.0)
+        tps_threshold = getattr(early_stop_cfg, "tps_improvement_threshold", 0.03)
+
+        if prev_tps > 0.0:
+            improvement = (curr_tps - prev_tps) / prev_tps
+            if improvement < tps_threshold:
+                return True, f"TPS saturated: improvement was {improvement * 100:.2f}% (threshold {tps_threshold * 100:.1f}%)"
+
+    return False, ""
 
 def run_serving_benchmark(
     matrix_path: Path,
@@ -119,6 +149,7 @@ def run_serving_benchmark(
     )
     versions = get_package_versions()
     rt = matrix.runtime
+    early_stop_cfg = getattr(matrix, "early_stopping", None)
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(exist_ok=True)
 
@@ -149,7 +180,8 @@ def run_serving_benchmark(
             continue
 
         for max_model_len in model_entry.max_model_len:
-            tp = resolve_tensor_parallel(
+            tp_override = getattr(model_entry, "tensor_parallel_size", None)
+            tp = tp_override if tp_override is not None else resolve_tensor_parallel(
                 rt.tensor_parallel_size,
                 model_spec.size_class,
                 gpu_count,
@@ -198,7 +230,11 @@ def run_serving_benchmark(
                         )
                     continue
 
-                for concurrency in workload.concurrency:
+                prev_metrics: BenchmarkMetrics | None = None
+                patience_counter = 0
+                max_patience = getattr(early_stop_cfg, "patience", 1) if early_stop_cfg else 1
+
+                for step_idx, concurrency in enumerate(workload.concurrency, start=1):
                     run_id = str(uuid.uuid4())
                     monitor = GPUMonitor(matrix.monitoring.sample_interval_seconds)
 
@@ -342,6 +378,27 @@ def run_serving_benchmark(
                             "Completed %s / %s / conc=%s success=%s",
                             model_entry.model_id, workload.id, concurrency, success,
                         )
+                        
+                        if success:
+                            should_stop, reason = should_stop_early(
+                                metrics, prev_metrics, early_stop_cfg, step_idx
+                            )
+                            if should_stop:
+                                patience_counter += 1
+                                logger.info(
+                                    "Early stopping condition triggered (%s). Patience: %d/%d",
+                                    reason, patience_counter, max_patience,
+                                )
+                                if patience_counter >= max_patience:
+                                    logger.info(
+                                        "Early stopping sweep for %s on %s at concurrency=%d",
+                                        model_entry.model_id, workload.id, concurrency,
+                                    )
+                                    break
+                            else:
+                                patience_counter = 0
+
+                            prev_metrics = metrics
 
                     except Exception as e:
                         et, em = classify_error(e)

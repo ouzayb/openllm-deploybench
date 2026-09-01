@@ -1,6 +1,12 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python & build artifacts
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 dist/
 build/
@@ -26,11 +32,18 @@ workloads/synthetic/generated/*.jsonl
 scripts/env.cuda.sh
 
 # Logs and caches
+logs/
 *.log
+*.jsonl
 .cache/
 .huggingface/
 
-# IDE
+# IDE & OS
 .idea/
 .vscode/
 *.swp
+*.swo
+.DS_Store
+# Temporary local inspection scripts
+parse_results.py
+plot*.py

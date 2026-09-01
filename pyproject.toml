@@ -13,6 +13,7 @@ authors = [{ name = "OpenLLM DeployBench" }]
 dependencies = [
     "torch",
     "vllm[bench]",
+    "setuptools>=77.0.3,<81.0.0",
     "transformers",
     "accelerate",
     "datasets",
@@ -32,6 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+quant = ["bitsandbytes>=0.43.0", "autoawq"]
 
 [project.scripts]
 deploybench = "deploybench.cli:app"

@@ -1,22 +1,18 @@
 models:
+  # 1. SMALL DENSE TIER (7B - 8B)
   - id: "qwen2_5_7b_instruct"
     hf_id: "Qwen/Qwen2.5-7B-Instruct"
     size_class: "7B"
     default_dtype: "bfloat16"
     trust_remote_code: true
-    notes: "Small model baseline"
+    notes: "Qwen 7B BF16 baseline"
 
-  - id: "qwen2_5_14b_instruct"
-    hf_id: "Qwen/Qwen2.5-14B-Instruct"
-    size_class: "14B"
-    default_dtype: "bfloat16"
+  - id: "qwen2_5_7b_instruct_fp8"
+    hf_id: "Qwen/Qwen2.5-7B-Instruct-FP8"
+    size_class: "7B"
+    default_dtype: "auto"
     trust_remote_code: true
-
-  - id: "qwen2_5_32b_instruct"
-    hf_id: "Qwen/Qwen2.5-32B-Instruct"
-    size_class: "32B"
-    default_dtype: "bfloat16"
-    trust_remote_code: true
+    notes: "Qwen 7B FP8 high-throughput"
 
   - id: "llama_3_1_8b_instruct"
     hf_id: "meta-llama/Llama-3.1-8B-Instruct"
@@ -24,10 +20,149 @@ models:
     default_dtype: "bfloat16"
     trust_remote_code: false
     requires_hf_token: true
+    notes: "Llama 8B BF16 baseline"
 
-  - id: "llama_3_1_70b_instruct"
-    hf_id: "meta-llama/Llama-3.1-70B-Instruct"
+  - id: "llama_3_1_8b_instruct_fp8"
+    hf_id: "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8"
+    size_class: "8B"
+    default_dtype: "auto"
+    trust_remote_code: false
+    requires_hf_token: true
+    notes: "Llama 8B FP8 hardware accelerated"
+
+
+  # 2. MID DENSE TIER (14B - 27B)
+  - id: "qwen2_5_14b_instruct"
+    hf_id: "Qwen/Qwen2.5-14B-Instruct"
+    size_class: "14B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "Qwen 14B BF16 baseline"
+
+  - id: "qwen2_5_14b_instruct_fp8"
+    hf_id: "Qwen/Qwen2.5-14B-Instruct-FP8"
+    size_class: "14B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "Qwen 14B FP8"
+
+  - id: "qwen3_8_27b_instruct"
+    hf_id: "Qwen/Qwen3.8-27B"
+    size_class: "27B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "Qwen 27B BF16 upper limit on dual-5090"
+
+  - id: "qwen3_8_27b_instruct_fp8"
+    hf_id: "Qwen/Qwen3.8-27B-FP8"
+    size_class: "27B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "Qwen 27B FP8 high saturation"
+
+
+  # 3. HIGH DENSE TIER (32B - 72B)
+  - id: "qwen2_5_32b_instruct"
+    hf_id: "Qwen/Qwen2.5-32B-Instruct"
+    size_class: "32B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "Qwen 32B BF16 (requires H200 or 4x 4090/5090)"
+
+  - id: "qwen2_5_32b_instruct_fp8"
+    hf_id: "Qwen/Qwen2.5-32B-Instruct-FP8"
+    size_class: "32B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "Qwen 32B FP8 for dual 5090 & single H200"
+
+  - id: "qwen2_5_32b_instruct_awq"
+    hf_id: "Qwen/Qwen2.5-32B-Instruct-AWQ"
+    size_class: "32B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "Qwen 32B 4-bit AWQ for 1x/2x 4090 & 5090"
+
+  - id: "qwen2_5_72b_instruct"
+    hf_id: "Qwen/Qwen2.5-72B-Instruct"
+    size_class: "72B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "Qwen 72B BF16 (for 2x H200)"
+
+  - id: "qwen2_5_72b_instruct_fp8"
+    hf_id: "Qwen/Qwen2.5-72B-Instruct-FP8"
+    size_class: "72B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "Qwen 72B FP8 for single/dual H200"
+
+  - id: "llama_3_3_70b_instruct"
+    hf_id: "meta-llama/Llama-3.3-70B-Instruct"
     size_class: "70B"
     default_dtype: "bfloat16"
     trust_remote_code: false
     requires_hf_token: true
+    notes: "Llama 3.3 70B BF16 (for H200)"
+
+  - id: "llama_3_3_70b_instruct_fp8"
+    hf_id: "neuralmagic/Llama-3.3-70B-Instruct-FP8"
+    size_class: "70B"
+    default_dtype: "auto"
+    trust_remote_code: false
+    requires_hf_token: true
+    notes: "Llama 3.3 70B FP8 for dual 5090 / H200"
+
+  - id: "llama_3_1_70b_instruct_awq"
+    hf_id: "hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4"
+    size_class: "70B"
+    default_dtype: "auto"
+    trust_remote_code: false
+    requires_hf_token: true
+    notes: "Llama 70B 4-bit AWQ for dual 4090 & dual 5090"
+
+
+  # 4. REASONING & DISTILLED MODELS
+  - id: "deepseek_r1_distill_qwen_14b"
+    hf_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
+    size_class: "14B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "DeepSeek R1 Distill 14B BF16"
+
+  - id: "deepseek_r1_distill_qwen_32b"
+    hf_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+    size_class: "32B"
+    default_dtype: "bfloat16"
+    trust_remote_code: true
+    notes: "DeepSeek R1 Distill 32B BF16"
+
+  - id: "deepseek_r1_distill_qwen_32b_fp8"
+    hf_id: "neuralmagic/DeepSeek-R1-Distill-Qwen-32B-FP8"
+    size_class: "32B"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "DeepSeek R1 Distill 32B FP8 for dual 5090 / H200"
+
+  # 5. MIXTURE OF EXPERTS (MoE) & FLAGSHIP TIER
+ 
+  - id: "mixtral_8x7b_instruct"
+    hf_id: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    size_class: "47B-MoE"
+    default_dtype: "bfloat16"
+    trust_remote_code: false
+    notes: "Mixtral 8x7B MoE BF16 for dual 5090 / H200"
+
+  - id: "deepseek_v3_fp8"
+    hf_id: "deepseek-ai/DeepSeek-V3"
+    size_class: "671B-MoE"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "DeepSeek V3 native FP8 MoE (for Multi-H200 clusters)"
+
+  - id: "deepseek_r1_fp8"
+    hf_id: "deepseek-ai/DeepSeek-R1"
+    size_class: "671B-MoE"
+    default_dtype: "auto"
+    trust_remote_code: true
+    notes: "DeepSeek R1 native FP8 reasoning flagship"

@@ -15,7 +15,7 @@ from deploybench.utils import load_yaml
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_QUANTS: list[str | None] = [None, "awq", "gptq", "bitsandbytes"]
+SUPPORTED_QUANTS: list[str | None] = [None, "fp8", "awq", "gptq", "bitsandbytes"]
 
 
 def run_quantization_benchmark(
@@ -41,6 +41,21 @@ def run_quantization_benchmark(
         for entry in base_models:
             e = deepcopy(entry)
             e["quantization"] = quant
+            base_id = e.get("model_id", "")
+
+            # If applying quantization to a base model, remap to quantized catalog ID if available
+            if quant and not base_id.endswith(f"_{quant}"):
+                quant_id = f"{base_id}_{quant}"
+                e["model_id"] = quant_id
+                e["dtype"] = "auto"
+            elif not quant:
+                # If testing baseline (None), strip any quantization suffix if present
+                for known_q in ["_fp8", "_awq", "_gptq"]:
+                    if base_id.endswith(known_q):
+                        e["model_id"] = base_id[: -len(known_q)]
+                        e["dtype"] = "bfloat16"
+                        break
+
             matrix_data["models"].append(e)
 
         quant_label = quant or "none"
