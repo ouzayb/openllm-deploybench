@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import urllib.request
+import re
 from typing import Any
 
 from deploybench.metrics import summarize_gpu_samples
@@ -13,6 +15,23 @@ from deploybench.utils import utc_now_iso
 
 logger = logging.getLogger(__name__)
 
+def fetch_vllm_kv_cache_usage(port: int = 8000) -> float | None:
+    try:
+        url = f"http://127.0.0.1:{port}/metrics"
+        req = urllib.request.Request(url, headers={"User-Agent": "deploybench"})
+        with urllib.request.urlopen(req, timeout=1.0) as response:
+            for line in response:
+                decoded = line.decode("utf-8").strip()
+                # Handle both raw metrics and metrics with Prometheus labels:
+                # vllm:gpu_cache_usage_factor 0.42
+                # vllm:gpu_cache_usage_factor{model_name="qwen"} 0.42
+                if decoded.startswith("vllm:gpu_cache_usage_factor"):
+                    match = re.search(r"vllm:gpu_cache_usage_factor(?:\{[^}]*\})?\s+([\d.eE+-]+)", decoded)
+                    if match:
+                        return float(match.group(1)) * 100.0
+    except Exception:
+        pass
+    return None
 
 class GPUMonitor:
     def __init__(self, sample_interval_seconds: float = 0.5) -> None:
@@ -46,6 +65,9 @@ class GPUMonitor:
         if not self._nvml_initialized or self._nvml is None:
             return
         nvml = self._nvml
+
+        kv_cache_pct = fetch_vllm_kv_cache_usage()
+
         try:
             count = nvml.nvmlDeviceGetCount()
             for i in range(count):
@@ -85,6 +107,7 @@ class GPUMonitor:
                         temperature_c=temp,
                         sm_clock_mhz=sm_clock,
                         memory_clock_mhz=mem_clock,
+                        kv_cache_usage_percent=kv_cache_pct,
                     )
                 )
         except Exception as e:

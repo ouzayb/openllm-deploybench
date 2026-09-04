@@ -6,7 +6,7 @@ benchmark:
 runtime:
   engine: "vllm"
   mode: "online"  # online | offline
-  tensor_parallel_size: "auto"
+  tensor_parallel_size: 2
   gpu_memory_utilization: 0.92
   enforce_eager: false
   seed: 42
@@ -28,7 +28,7 @@ early_stopping:
   min_concurrency_steps: 3          # Minimum number of steps to always execute (e.g. 1, 4, 8)
   tps_improvement_threshold: 0.03   # Stop if throughput improvement falls below 3%
   patience: 1                       # Execute 1 extra step past plateau to capture saturation knee
-  max_ttft_p99_ms: 15000            # Stop if P99 TTFT exceeds 15,000 ms (15s queue explosion)
+  max_ttft_p99_ms: 20000            # Stop if P99 TTFT exceeds 15,000 ms (15s queue explosion)
   max_error_rate: 0.05              # Stop if more than 5% of requests fail or time out
 
 models:
@@ -39,19 +39,19 @@ models:
     quantization: null
     dtype: "bfloat16"
     max_model_len:
-      - 8192
+      - 16384
 
   - model_id: "qwen2_5_7b_instruct_fp8"
     quantization: "fp8"
     dtype: "auto"
     max_model_len:
-      - 8192
+      - 16384
 
   - model_id: "llama_3_1_8b_instruct_fp8"
     quantization: "fp8"
     dtype: "auto"
     max_model_len:
-      - 8192
+      - 16384
 
   # ==========================================
   # 14B / 27B Tier (Mid-size Dense & BF16 Upper Limit)
@@ -109,16 +109,7 @@ workloads:
     prompt_tokens: 512
     output_tokens: 256
     num_prompts: 512
-    concurrency:
-      - 1
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
+    
 
   # 2. Coding: Measures sustained memory bandwidth saturation
   - id: "coding_2048_1024"
@@ -127,16 +118,7 @@ workloads:
     prompt_tokens: 2048
     output_tokens: 1024
     num_prompts: 256
-    concurrency:
-      - 1
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
+    
 
   # 3. RAG: Measures heavy prefill compute saturation and TTFT explosion
   - id: "rag_8192_512"
@@ -145,16 +127,6 @@ workloads:
     prompt_tokens: 8192
     output_tokens: 512
     num_prompts: 128
-    concurrency:
-      - 1
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
-      - 128
-      - 256
-      - 512
 
   # 4. Long Context RAG: Context length limits
   - id: "long_rag_32768_512"
@@ -163,14 +135,6 @@ workloads:
     prompt_tokens: 32768
     output_tokens: 512
     num_prompts: 64
-    concurrency:
-      - 1
-      - 2
-      - 4
-      - 8
-      - 16
-      - 32
-      - 64
 
 long_context:
   enabled: false

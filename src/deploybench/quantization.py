@@ -15,7 +15,9 @@ from deploybench.utils import load_yaml
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_QUANTS: list[str | None] = [None, "fp8", "awq", "gptq", "bitsandbytes"]
+SUPPORTED_QUANTS: list[str | None] = [None, "fp4", "fp8", "awq", "gptq", "bitsandbytes"]
+
+KNOWN_QUANT_SUFFIXES: list[str] = [ "_nvfp4", "_fp4", "_fp8","_awq","_gptq","_bitsandbytes"]
 
 
 def run_quantization_benchmark(
@@ -43,18 +45,21 @@ def run_quantization_benchmark(
             e["quantization"] = quant
             base_id = e.get("model_id", "")
 
-            # If applying quantization to a base model, remap to quantized catalog ID if available
-            if quant and not base_id.endswith(f"_{quant}"):
-                quant_id = f"{base_id}_{quant}"
-                e["model_id"] = quant_id
+            # Clean any existing quantization suffix first to prevent chaining (e.g., _fp8_awq)
+            clean_id = base_id
+            for suffix in KNOWN_QUANT_SUFFIXES:
+                if clean_id.endswith(suffix):
+                    clean_id = clean_id[: -len(suffix)]
+                    break
+
+            if quant:
+                # Remap to the target quantized model catalog ID
+                e["model_id"] = f"{clean_id}_{quant}"
                 e["dtype"] = "auto"
-            elif not quant:
-                # If testing baseline (None), strip any quantization suffix if present
-                for known_q in ["_fp8", "_awq", "_gptq"]:
-                    if base_id.endswith(known_q):
-                        e["model_id"] = base_id[: -len(known_q)]
-                        e["dtype"] = "bfloat16"
-                        break
+            else:
+                # Baseline (None) configuration
+                e["model_id"] = clean_id
+                e["dtype"] = "bfloat16"
 
             matrix_data["models"].append(e)
 

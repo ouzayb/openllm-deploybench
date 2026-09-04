@@ -28,6 +28,7 @@ class BenchmarkMetrics(BaseModel):
     energy_wh: float | None = None
     avg_gpu_utilization: float | None = None
     max_temperature_c: float | None = None
+    peak_kv_cache_usage_pct: float | None = None
 
 
 class GPUSample(BaseModel):
@@ -41,6 +42,7 @@ class GPUSample(BaseModel):
     temperature_c: float | None = None
     sm_clock_mhz: float | None = None
     memory_clock_mhz: float | None = None
+    kv_cache_usage_percent: float | None = None
 
 
 class GPUSampleSummary(BaseModel):
@@ -50,6 +52,7 @@ class GPUSampleSummary(BaseModel):
     average_gpu_utilization: float | None = None
     max_temperature_c: float | None = None
     energy_wh: float | None = None
+    peak_kv_cache_usage_pct: float | None = None
 
 
 class ReproducibilityMeta(BaseModel):
@@ -88,13 +91,15 @@ class ServingBenchmarkResult(BaseModel):
     output_tokens_target: int = 0
     num_prompts: int = 0
     concurrency: int = 1
-
+    # Useful flag to track if early stopping was triggered
+    early_stopped: bool = False
+    saturation_reached: bool = False
     success: bool = True
     error_type: str | None = None
     error_message: str | None = None
 
-    metrics: BenchmarkMetrics = Field(default_factory=BenchmarkMetrics)
-    reproducibility: ReproducibilityMeta = Field(default_factory=ReproducibilityMeta)
+    metrics: BenchmarkMetrics = Field(default_factory=lambda: BenchmarkMetrics())
+    reproducibility: ReproducibilityMeta = Field(default_factory=lambda: ReproducibilityMeta())
     # The configuration that actually produced this row (engine V1 on/off,
     # FlashInfer sampler, enforce_eager, attention backend, bench profile,
     # whether strict reproducible mode was used). Self-documents every result so
@@ -121,7 +126,7 @@ class LongContextResult(BaseModel):
     success: bool = True
     error_type: str | None = None
     error_message: str | None = None
-    reproducibility: ReproducibilityMeta = Field(default_factory=ReproducibilityMeta)
+    reproducibility: ReproducibilityMeta = Field(default_factory=lambda: ReproducibilityMeta())
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

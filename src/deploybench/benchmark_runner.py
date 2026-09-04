@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,63 @@ from deploybench.vllm_runner import (
 from deploybench.workload_generator import generate_synthetic_dataset
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_dynamic_concurrency(max_cap: int = 2048) -> Iterator[int]:
+    """Yields powers of two starting from 1 up to max_cap."""
+    current_concurrency = 1
+    while current_concurrency <= max_cap:
+        yield current_concurrency
+        current_concurrency *= 2
+
+def resolve_dynamic_num_prompts(
+    model_id: str,
+    workload_id: str,
+    hardware: HardwareConfig | None,
+    base_num_prompts: int,
+) -> int:
+    """
+    Dynamically resolve optimal num_prompts based on workload type, model
+    architecture, and hardware capacity.
+    """
+    workload_name = workload_id.lower()
+    model_name = model_id.lower()
+    machine_label = (hardware.machine_label if hardware else "").lower()
+    machine_id = (hardware.machine_id if hardware else "").lower()
+    is_h200 = "h200" in machine_label or "h200" in machine_id
+
+    # 1. RAG and Long-Context Workloads (Compute-bound prefill phase)
+    # Each request contains 7.6k - 32k tokens, causing high prefill overhead and VRAM usage.
+    if "rag" in workload_name or "long" in workload_name:
+        if is_h200:
+            # H200 has 282GB HBM3e; it can comfortably process deeper batches
+            return max(base_num_prompts, 256)
+        # Dual 4090/5090 saturate at lower concurrencies (16-32); keep prompt volume bounded
+        return min(base_num_prompts, 128)
+
+    # 2. Coding Workloads (2048 prompt / 1024 output)
+    if "coding" in workload_name or "code" in workload_name:
+        if is_h200:
+            return 1024
+        return max(base_num_prompts, 256)
+
+    # 3. Standard Chat Workloads - High-end Datacenter Tier (H200)
+    if is_h200:
+        if "72b" in model_name and "fp8" in model_name:
+            return 4096
+        return 2048
+
+    # 4. Standard Chat Workloads - Consumer Dual 4090 / Dual 5090 Tier
+    # Small parameter models leave massive KV cache headroom
+    if any(size in model_name for size in ["7b", "9b", "12b"]):
+        return 1024
+
+    # Quantized models (AWQ, FP8) with large KV cache margin
+    if any(q in model_name for q in ["awq", "27b_fp8"]):
+        return 1024
+
+    # 5. Dense 14B / 35B models (saturate early around 128-256 concurrency)
+    return base_num_prompts
 
 
 def _base_result(
@@ -79,6 +137,7 @@ def _write_failure(
     )
     append_jsonl(output_path, result)
 
+
 def should_stop_early(
     current_metrics: Any,
     prev_metrics: Any | None,
@@ -109,6 +168,7 @@ def should_stop_early(
                 return True, f"TPS saturated: improvement was {improvement * 100:.2f}% (threshold {tps_threshold * 100:.1f}%)"
 
     return False, ""
+
 
 def run_serving_benchmark(
     matrix_path: Path,
@@ -212,13 +272,29 @@ def run_serving_benchmark(
             for workload in matrix.workloads:
                 if skip_model_len:
                     break
+
+                # Resolve dynamic prompt count based on model, workload type, and hardware
+                effective_num_prompts = resolve_dynamic_num_prompts(
+                    model_id=model_entry.model_id,
+                    workload_id=workload.id,
+                    hardware=hardware,
+                    base_num_prompts=workload.num_prompts,
+                )
+
                 try:
+                    # Pass effective_num_prompts so the generated file has enough prompts
                     dataset_path = generate_synthetic_dataset(
-                        workload, model_spec.hf_id, seed=rt.seed,
+                        workload, model_spec.hf_id, seed=rt.seed, num_prompts=effective_num_prompts
                     )
+                except TypeError:
+                    # Fallback if generate_synthetic_dataset does not take num_prompts argument
+                    dataset_path = generate_synthetic_dataset(
+                        workload, model_spec.hf_id, seed=rt.seed
+                )
                 except Exception as e:
                     et, em = classify_error(e)
-                    for conc in workload.concurrency:
+                    fallback_concurrencies = getattr(workload, "concurrency", None) or [1]
+                    for conc in fallback_concurrencies:
                         _write_failure(
                             output_path, hardware, repro, versions, probe,
                             et, em,
@@ -234,17 +310,30 @@ def run_serving_benchmark(
                 patience_counter = 0
                 max_patience = getattr(early_stop_cfg, "patience", 1) if early_stop_cfg else 1
 
-                for step_idx, concurrency in enumerate(workload.concurrency, start=1):
+                # Select defined concurrency or dynamically sweep powers of two
+                concurrency_sequence = (
+                    workload.concurrency
+                    if getattr(workload, "concurrency", None)
+                    else _generate_dynamic_concurrency()
+                )
+
+                for step_idx, concurrency in enumerate(concurrency_sequence, start=1):
+                    
+                    if concurrency > effective_num_prompts:
+                        logger.info(
+                            "Skipping concurrency %d exceeding effective_num_prompts (%d)",
+                            concurrency, effective_num_prompts,
+                        )
+                        break 
                     run_id = str(uuid.uuid4())
                     monitor = GPUMonitor(matrix.monitoring.sample_interval_seconds)
-
                     try:
                         if rt.mode == "offline":
                             out = run_bench_throughput_offline(
                                 hf_id=model_spec.hf_id,
                                 prompt_tokens=workload.prompt_tokens,
                                 output_tokens=workload.output_tokens,
-                                num_prompts=workload.num_prompts,
+                                num_prompts=effective_num_prompts,
                                 dtype=merged["dtype"],
                                 max_model_len=max_model_len,
                                 tensor_parallel_size=tp,
@@ -291,7 +380,7 @@ def run_serving_benchmark(
                                         workload_id=workload.id,
                                         prompt_tokens_target=workload.prompt_tokens,
                                         output_tokens_target=workload.output_tokens,
-                                        num_prompts=workload.num_prompts,
+                                        num_prompts=effective_num_prompts,
                                         concurrency=concurrency,
                                         metrics=BenchmarkMetrics(),
                                         server_config=server_config,
@@ -320,7 +409,7 @@ def run_serving_benchmark(
                             bench = run_bench_serve(
                                 hf_id=model_spec.hf_id,
                                 dataset_path=dataset_path,
-                                num_prompts=workload.num_prompts,
+                                num_prompts=effective_num_prompts,
                                 max_concurrency=concurrency,
                                 host=rt.host,
                                 port=rt.port,
@@ -378,7 +467,15 @@ def run_serving_benchmark(
                             "Completed %s / %s / conc=%s success=%s",
                             model_entry.model_id, workload.id, concurrency, success,
                         )
-                        
+
+                        # Terminate dynamic concurrency sweep if the run failed
+                        if not success:
+                            logger.warning(
+                                "Run failed at concurrency=%d (%s: %s). Halting sweep.",
+                                concurrency, et, em
+                            )
+                            break
+
                         if success:
                             should_stop, reason = should_stop_early(
                                 metrics, prev_metrics, early_stop_cfg, step_idx
@@ -416,9 +513,11 @@ def run_serving_benchmark(
                             workload_id=workload.id,
                             prompt_tokens_target=workload.prompt_tokens,
                             output_tokens_target=workload.output_tokens,
-                            num_prompts=workload.num_prompts,
+                            num_prompts=effective_num_prompts,
                             concurrency=concurrency,
                         )
+                        # Abort higher concurrencies on unexpected execution failure
+                        break
                     finally:
                         if rt.mode == "offline":
                             monitor.stop()

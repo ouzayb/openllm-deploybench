@@ -45,6 +45,13 @@ def summarize_gpu_samples(
     powers = [s.power_draw_watts for s in samples if s.power_draw_watts is not None]
     utils = [s.utilization_gpu_percent for s in samples]
     temps = [s.temperature_c for s in samples if s.temperature_c is not None]
+    
+    # Calculate peak KV cache usage across all samples
+    kv_usages = [
+        s.kv_cache_usage_percent
+        for s in samples
+        if getattr(s, "kv_cache_usage_percent", None) is not None
+    ]
 
     return GPUSampleSummary(
         peak_vram_gb=max(mem_gb) if mem_gb else None,
@@ -53,7 +60,9 @@ def summarize_gpu_samples(
         average_gpu_utilization=float(np.mean(utils)) if utils else None,
         max_temperature_c=max(temps) if temps else None,
         energy_wh=compute_energy_wh(samples, interval_sec),
+        peak_kv_cache_usage_pct=max(kv_usages) if kv_usages else None,
     )
+
 
 
 def gpu_summary_to_metrics(summary: GPUSampleSummary) -> dict[str, float | None]:
@@ -64,6 +73,7 @@ def gpu_summary_to_metrics(summary: GPUSampleSummary) -> dict[str, float | None]
         "energy_wh": summary.energy_wh,
         "avg_gpu_utilization": summary.average_gpu_utilization,
         "max_temperature_c": summary.max_temperature_c,
+        "peak_kv_cache_usage_pct": getattr(summary, "peak_kv_cache_usage_pct", None),
     }
 
 

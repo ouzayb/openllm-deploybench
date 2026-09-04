@@ -36,63 +36,141 @@ def _load_longctx_df(results_dir: Path) -> pd.DataFrame:
 
 
 def _bar_plot(df: pd.DataFrame, x: str, y: str, title: str, path: Path) -> None:
-    if df.empty or y not in df.columns:
-        logger.warning("Skipping plot %s (no data)", path.name)
+    if df.empty or y not in df.columns or df[y].dropna().empty:
+        logger.warning("Skipping plot %s: Column '%s' has no valid numerical data", path.name, y)
         return
-    agg = df.groupby(x, dropna=False)[y].mean().reset_index()
+
+    valid_df = df.dropna(subset=[y])
+    agg = valid_df.groupby(x, dropna=False)[y].mean().reset_index()
+    if agg.empty:
+        logger.warning("Skipping plot %s: Aggregated data is empty", path.name)
+        return
+
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(agg[x].astype(str), agg[y])
-    ax.set_title(title)
+    bars = ax.bar(agg[x].astype(str), agg[y], color="#2b5c8f", edgecolor="black", width=0.6)
+    ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_xlabel(x)
     ax.set_ylabel(y)
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
     plt.xticks(rotation=45, ha="right")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
     plt.close(fig)
     logger.info("Wrote %s", path)
 
+def _grouped_bar_plot(
+    df: pd.DataFrame,
+    category_col: str,
+    group_col: str,
+    metric_col: str,
+    title: str,
+    path: Path,
+) -> None:
+    """Plot cross-hardware comparison grouped by model to avoid averaging disparate workloads."""
+    if df.empty or metric_col not in df.columns or df[metric_col].dropna().empty:
+        return
 
-def run_plot(results_dir: Path, output_dir: Path) -> list[Path]:
+    valid_df = df.dropna(subset=[metric_col])
+    pivot_df = valid_df.pivot_table(
+        index=category_col,
+        columns=group_col,
+        values=metric_col,
+        aggfunc="mean",
+    )
+    if pivot_df.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    pivot_df.plot(kind="bar", ax=ax, width=0.75, edgecolor="black")
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Model Architecture / Quantization")
+    ax.set_ylabel(metric_col.replace("metric_", "").replace("_", " ").title())
+    ax.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.xticks(rotation=45, ha="right")
+    plt.legend(title="Hardware Instance", frameon=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    logger.info("Wrote grouped plot %s", path)
+
+def run_plot(
+    results_dir: Path,
+    output_dir: Path,
+    machine_id: str | None = None,  # Cihaz filtresi eklendi
+) -> list[Path]:
     results_dir = Path(results_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     serving = _load_serving_df(results_dir)
     longctx = _load_longctx_df(results_dir)
+
+    if machine_id:
+        if not serving.empty and "machine_id" in serving.columns:
+            serving = serving[serving["machine_id"] == machine_id]
+        if not longctx.empty and "machine_id" in longctx.columns:
+            longctx = longctx[longctx["machine_id"] == machine_id]
+        logger.info("Filtered benchmark results for machine_id='%s'", machine_id)
+    
     created: list[Path] = []
 
     if not serving.empty and serving["success"].any():
         ok = serving[serving["success"] == True]  # noqa: E712
-        label_col = "machine_label" if "machine_label" in ok.columns else "machine_id"
+        
+        hw_col = "machine_label" if "machine_label" in ok.columns else "machine_id"
 
-        plots = [
-            ("throughput_by_hardware.png", label_col, "metric_output_tokens_per_second", "Output Throughput by Hardware"),
-            ("ttft_p95_by_hardware.png", label_col, "metric_ttft_ms_p95", "TTFT p95 by Hardware"),
-            ("tpot_p95_by_hardware.png", label_col, "metric_tpot_ms_p95", "TPOT p95 by Hardware"),
+        # Case 1: Targeted single-device profiling
+        if machine_id:
+            plots = [
+                (f"{machine_id}_throughput.png", "model_id", "metric_output_tokens_per_second", f"Throughput by Model on {machine_id}"),
+                (f"{machine_id}_ttft_p95.png", "model_id", "metric_ttft_ms_p95", f"TTFT p95 by Model on {machine_id}"),
+                (f"{machine_id}_tpot_p95.png", "model_id", "metric_tpot_ms_p95", f"TPOT p95 by Model on {machine_id}"),
+            ]
+            for fname, x, y, title in plots:
+                p = output_dir / fname
+                _bar_plot(ok, x, y, title, p)
+                created.append(p)
+
+            if "model_id" in ok.columns:
+                p = output_dir / f"{machine_id}_peak_vram_by_model.png"
+                _bar_plot(ok, "model_id", "metric_peak_vram_gb", f"Peak VRAM by Model on {machine_id}", p)
+                created.append(p)
+
+        # Case 2: Multi-device cross comparison (Research Question 1 & 2)
+        else:
+            cross_plots = [
+                ("throughput_by_hardware.png", "model_id", hw_col, "metric_output_tokens_per_second", "Throughput by Hardware Across Models"),
+                ("ttft_p95_by_hardware.png", "model_id", hw_col, "metric_ttft_ms_p95", "TTFT p95 Across Hardware by Model"),
+                ("tpot_p95_by_hardware.png", "model_id", hw_col, "metric_tpot_ms_p95", "TPOT p95 Across Hardware by Model"),
+            ]
+            for fname, cat_col, grp_col, metric, title in cross_plots:
+                p = output_dir / fname
+                _grouped_bar_plot(ok, category_col=cat_col, group_col=grp_col, metric_col=metric, title=title, path=p)
+                created.append(p)
+
+            if "model_id" in ok.columns:
+                p = output_dir / "peak_vram_by_model.png"
+                _bar_plot(ok, "model_id", "metric_peak_vram_gb", "Peak VRAM by Model", p)
+                created.append(p)
+
+       
+        summary_candidates = [
+            results_dir.parent / "reports" / "summary_price_performance.csv",
+            results_dir / ".." / "reports" / "summary_price_performance.csv",
+            output_dir.parent / "summary_price_performance.csv",
         ]
-        for fname, x, y, title in plots:
-            p = output_dir / fname
-            _bar_plot(ok, x, y, title, p)
-            created.append(p)
+        price_path = next((p for p in summary_candidates if p.exists()), None)
 
-        if "model_id" in ok.columns:
-            p = output_dir / "peak_vram_by_model.png"
-            _bar_plot(ok, "model_id", "metric_peak_vram_gb", "Peak VRAM by Model", p)
-            created.append(p)
-
-        price_path = results_dir.parent / "reports" / "summary_price_performance.csv"
-        if not price_path.exists():
-            price_path = results_dir / ".." / "reports" / "summary_price_performance.csv"
-        pp = Path(results_dir).parent / "reports" / "summary_price_performance.csv"
-        if pp.exists():
-            ppdf = pd.read_csv(pp)
+        if price_path:
+            ppdf = pd.read_csv(price_path)
+            target_label = "machine_label" if "machine_label" in ppdf.columns else "machine_id"
             if "tokens_per_dollar" in ppdf.columns and ppdf["tokens_per_dollar"].notna().any():
                 fig, ax = plt.subplots(figsize=(10, 6))
                 sub = ppdf[ppdf["tokens_per_dollar"].notna()]
-                ax.bar(sub[label_col].astype(str) if label_col in sub.columns else sub["machine_id"].astype(str),
-                       sub["tokens_per_dollar"])
-                ax.set_title("Tokens per Dollar")
+                ax.bar(sub[target_label].astype(str), sub["tokens_per_dollar"], color="#2b5c8f")
+                ax.set_title("Tokens per Dollar", fontsize=12, fontweight="bold")
                 ax.set_ylabel("tokens / USD")
+                ax.grid(axis="y", linestyle="--", alpha=0.7)
                 plt.xticks(rotation=45, ha="right")
                 fig.tight_layout()
                 p = output_dir / "tokens_per_dollar.png"
@@ -103,10 +181,26 @@ def run_plot(results_dir: Path, output_dir: Path) -> list[Path]:
             if "relative_to_owned_h200" in ppdf.columns and ppdf["relative_to_owned_h200"].notna().any():
                 fig, ax = plt.subplots(figsize=(10, 6))
                 sub = ppdf[ppdf["relative_to_owned_h200"].notna()]
-                ax.bar(sub["machine_id"].astype(str), sub["relative_to_owned_h200"])
-                ax.set_title("Rented vs Owned H200 Relative Performance")
-                ax.set_ylabel("relative throughput")
-                ax.axhline(1.0, linestyle="--", color="gray")
+                bars = ax.bar(sub[target_label].astype(str), sub["relative_to_owned_h200"], color="#3d72a4", edgecolor="black", width=0.5)
+                ax.set_title("Rented vs Owned H200 Relative Performance", fontsize=12, fontweight="bold")
+                ax.set_ylabel("Relative Throughput (1.0 = Owned H200)")
+                ax.axhline(1.0, linestyle="--", color="red", linewidth=1.5, label="Owned H200 Baseline (1.0)")
+                ax.grid(axis="y", linestyle="--", alpha=0.7)
+                ax.legend(loc="lower right")
+
+                # Print value label on top of each bar
+                for bar in bars:
+                    height = bar.get_height()
+                    ax.annotate(
+                        f"{height:.2f}x",
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 4),
+                        textcoords="offset points",
+                        ha="center",
+                        va="bottom",
+                        fontweight="bold",
+                    )
+
                 plt.xticks(rotation=45, ha="right")
                 fig.tight_layout()
                 p = output_dir / "owned_vs_rented_h200_relative_perf.png"

@@ -102,7 +102,19 @@ class WorkloadSpec(BaseModel):
     prompt_tokens: int
     output_tokens: int
     num_prompts: int = 64
-    concurrency: list[int] = Field(default_factory=lambda: [1])
+    concurrency: list[int] = Field(default_factory=list)
+
+    @field_validator("concurrency", mode="before")
+    @classmethod
+    def generate_concurrency_range(cls, v: Any, info) -> list[int]:
+        if not v:
+            result = []
+            val = 1
+            while val <= 16384:
+                result.append(val)
+                val *= 2
+            return result
+        return v
 
 
 class LongContextConfig(BaseModel):
@@ -141,27 +153,18 @@ def load_hardware_config(path: Path | str | None) -> HardwareConfig | None:
 
 
 def resolve_tensor_parallel(
-    tp_setting: int | str,
-    model_size_class: str,
+    configured_tp: str | int,
+    size_class: str,
     gpu_count: int,
 ) -> int:
-    if isinstance(tp_setting, int):
-        return min(tp_setting, max(gpu_count, 1))
-    if tp_setting != "auto":
-        try:
-            return min(int(tp_setting), max(gpu_count, 1))
-        except ValueError:
-            pass
+    if isinstance(configured_tp, int):
+        return min(configured_tp, gpu_count)
 
-    size = model_size_class.upper().replace("B", "")
-    try:
-        billions = int("".join(c for c in size if c.isdigit()) or "7")
-    except ValueError:
-        billions = 7
+    billions = parse_size_class_billions(size_class)
 
-    if gpu_count >= 2 and billions >= 32:
-        return min(2, gpu_count)
-    if gpu_count >= 2 and billions >= 70:
+    if gpu_count >= 4 and billions >= 65:
+        return min(8 if gpu_count >= 8 and billions >= 200 else 4, gpu_count)
+    if gpu_count >= 2 and billions >= 20:
         return min(2, gpu_count)
     return 1
 

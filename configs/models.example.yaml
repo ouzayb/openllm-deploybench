@@ -1,168 +1,109 @@
 models:
-  # 1. SMALL DENSE TIER (7B - 8B)
+  # =============================================================
+  # BASELINE TIER 
+  # =============================================================
+
   - id: "qwen2_5_7b_instruct"
     hf_id: "Qwen/Qwen2.5-7B-Instruct"
     size_class: "7B"
     default_dtype: "bfloat16"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 7B BF16 baseline"
+    notes: "Qwen 2.5 7B Instruct native BF16 baseline"
 
-  - id: "qwen2_5_7b_instruct_fp8"
-    hf_id: "Qwen/Qwen2.5-7B-Instruct-FP8"
-    size_class: "7B"
+  - id: "qwen3_5_9b"
+    hf_id: "Qwen/Qwen3.5-9B"
+    size_class: "9B"
     default_dtype: "auto"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 7B FP8 high-throughput"
+    notes: "Qwen 3.5 9B official baseline"
 
-  - id: "llama_3_1_8b_instruct"
-    hf_id: "meta-llama/Llama-3.1-8B-Instruct"
-    size_class: "8B"
-    default_dtype: "bfloat16"
-    trust_remote_code: false
-    requires_hf_token: true
-    notes: "Llama 8B BF16 baseline"
-
-  - id: "llama_3_1_8b_instruct_fp8"
-    hf_id: "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8"
-    size_class: "8B"
+  - id: "gemma_4_12b_it"
+    hf_id: "google/gemma-4-12B-it"
+    size_class: "12B"
     default_dtype: "auto"
-    trust_remote_code: false
+    tensor_parallel_size: 2
+    trust_remote_code: true
     requires_hf_token: true
-    notes: "Llama 8B FP8 hardware accelerated"
+    notes: "Gemma 4 12B Instruct (requires HF token)"
 
+  # =============================================================
+  # MID TIER 
+  # =============================================================
 
-  # 2. MID DENSE TIER (14B - 27B)
   - id: "qwen2_5_14b_instruct"
     hf_id: "Qwen/Qwen2.5-14B-Instruct"
     size_class: "14B"
     default_dtype: "bfloat16"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 14B BF16 baseline"
+    notes: "Qwen 2.5 14B Instruct native BF16"
 
-  - id: "qwen2_5_14b_instruct_fp8"
-    hf_id: "Qwen/Qwen2.5-14B-Instruct-FP8"
-    size_class: "14B"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "Qwen 14B FP8"
-
-  - id: "qwen3_8_27b_instruct"
-    hf_id: "Qwen/Qwen3.8-27B"
-    size_class: "27B"
+  # Target: Dual H200 ONLY (Raw ~62GB weights, exceeds Dual 4090/5090 capacity)
+  - id: "gemma_4_31b_it"
+    hf_id: "google/gemma-4-31B-it"
+    size_class: "31B"
     default_dtype: "bfloat16"
-    trust_remote_code: true
-    notes: "Qwen 27B BF16 upper limit on dual-5090"
+    tensor_parallel_size: 2
+    trust_remote_code: false
+    requires_hf_token: true
+    notes: "Gemma 4 31B Instruct native BF16 for Dual H200"
 
-  - id: "qwen3_8_27b_instruct_fp8"
-    hf_id: "Qwen/Qwen3.8-27B-FP8"
-    size_class: "27B"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "Qwen 27B FP8 high saturation"
+  # =============================================================
+  # STRESS TIER 
+  # =============================================================
 
-
-  # 3. HIGH DENSE TIER (32B - 72B)
-  - id: "qwen2_5_32b_instruct"
-    hf_id: "Qwen/Qwen2.5-32B-Instruct"
-    size_class: "32B"
-    default_dtype: "bfloat16"
-    trust_remote_code: true
-    notes: "Qwen 32B BF16 (requires H200 or 4x 4090/5090)"
-
-  - id: "qwen2_5_32b_instruct_fp8"
-    hf_id: "Qwen/Qwen2.5-32B-Instruct-FP8"
-    size_class: "32B"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "Qwen 32B FP8 for dual 5090 & single H200"
-
+  # Target: Dual 4090, Dual 5090, Dual H200
   - id: "qwen2_5_32b_instruct_awq"
     hf_id: "Qwen/Qwen2.5-32B-Instruct-AWQ"
     size_class: "32B"
     default_dtype: "auto"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 32B 4-bit AWQ for 1x/2x 4090 & 5090"
+    notes: "Qwen 2.5 32B AWQ official release, optimal headroom for Dual 4090/5090"
 
-  - id: "qwen2_5_72b_instruct"
+  # Target: Dual 5090, Dual H200
+  - id: "qwen3_5_27b_fp8"
+    hf_id: "Qwen/Qwen3.5-27B-FP8"
+    size_class: "27B"
+    default_dtype: "auto"
+    tensor_parallel_size: 2
+    trust_remote_code: true
+    notes: "Qwen 3.5 27B FP8 intermediate saturation model"
+
+  # Target: Dual 5090, Dual H200
+  - id: "qwen3_5_35b_fp8"
+    hf_id: "Qwen/Qwen3.5-35B-FP8"
+    size_class: "35B"
+    default_dtype: "auto"
+    tensor_parallel_size: 2
+    trust_remote_code: true
+    notes: "Qwen 3.5 35B FP8 upper stress tier for Dual 5090"
+
+  # Target: Dual H200 ONLY (Raw ~144GB weights, requires 282GB HBM3e)
+  - id: "qwen2_5_72b_instruct_bf16"
     hf_id: "Qwen/Qwen2.5-72B-Instruct"
     size_class: "72B"
     default_dtype: "bfloat16"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 72B BF16 (for 2x H200)"
+    notes: "Qwen 2.5 72B Instruct native BF16 uncompressed throughput"
 
-  - id: "qwen2_5_72b_instruct_fp8"
-    hf_id: "Qwen/Qwen2.5-72B-Instruct-FP8"
+  # Target: Dual H200 ONLY (Hopper FP8 Engine Saturation)
+  - id: "qwen3_5_72b_instruct_fp8"
+    hf_id: "Qwen/Qwen3.5-72B-FP8"
     size_class: "72B"
     default_dtype: "auto"
+    tensor_parallel_size: 2
     trust_remote_code: true
-    notes: "Qwen 72B FP8 for single/dual H200"
+    notes: "Qwen 3.5 72B FP8 maximum concurrency benchmark on Dual H200"
 
-  - id: "llama_3_3_70b_instruct"
-    hf_id: "meta-llama/Llama-3.3-70B-Instruct"
-    size_class: "70B"
-    default_dtype: "bfloat16"
-    trust_remote_code: false
-    requires_hf_token: true
-    notes: "Llama 3.3 70B BF16 (for H200)"
-
-  - id: "llama_3_3_70b_instruct_fp8"
-    hf_id: "neuralmagic/Llama-3.3-70B-Instruct-FP8"
-    size_class: "70B"
+  #Target: Dual H200 ONLY
+  - id: "qwen3_5_122b_a10b_gptq_int4"
+    hf_id: "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4"
+    size_class: "122B"
     default_dtype: "auto"
-    trust_remote_code: false
-    requires_hf_token: true
-    notes: "Llama 3.3 70B FP8 for dual 5090 / H200"
-
-  - id: "llama_3_1_70b_instruct_awq"
-    hf_id: "hugging-quants/Meta-Llama-3.1-70B-Instruct-AWQ-INT4"
-    size_class: "70B"
-    default_dtype: "auto"
-    trust_remote_code: false
-    requires_hf_token: true
-    notes: "Llama 70B 4-bit AWQ for dual 4090 & dual 5090"
-
-
-  # 4. REASONING & DISTILLED MODELS
-  - id: "deepseek_r1_distill_qwen_14b"
-    hf_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B"
-    size_class: "14B"
-    default_dtype: "bfloat16"
+    tensor_parallel_size: 1
     trust_remote_code: true
-    notes: "DeepSeek R1 Distill 14B BF16"
-
-  - id: "deepseek_r1_distill_qwen_32b"
-    hf_id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
-    size_class: "32B"
-    default_dtype: "bfloat16"
-    trust_remote_code: true
-    notes: "DeepSeek R1 Distill 32B BF16"
-
-  - id: "deepseek_r1_distill_qwen_32b_fp8"
-    hf_id: "neuralmagic/DeepSeek-R1-Distill-Qwen-32B-FP8"
-    size_class: "32B"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "DeepSeek R1 Distill 32B FP8 for dual 5090 / H200"
-
-  # 5. MIXTURE OF EXPERTS (MoE) & FLAGSHIP TIER
- 
-  - id: "mixtral_8x7b_instruct"
-    hf_id: "mistralai/Mixtral-8x7B-Instruct-v0.1"
-    size_class: "47B-MoE"
-    default_dtype: "bfloat16"
-    trust_remote_code: false
-    notes: "Mixtral 8x7B MoE BF16 for dual 5090 / H200"
-
-  - id: "deepseek_v3_fp8"
-    hf_id: "deepseek-ai/DeepSeek-V3"
-    size_class: "671B-MoE"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "DeepSeek V3 native FP8 MoE (for Multi-H200 clusters)"
-
-  - id: "deepseek_r1_fp8"
-    hf_id: "deepseek-ai/DeepSeek-R1"
-    size_class: "671B-MoE"
-    default_dtype: "auto"
-    trust_remote_code: true
-    notes: "DeepSeek R1 native FP8 reasoning flagship"
+    notes: "Qwen 3.5 122B MoE GPTQ-Int4 benchmark on Single H200"

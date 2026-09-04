@@ -109,18 +109,24 @@ def run_quantization_cmd(
     models_config: Path = typer.Option(Path("configs/models.yaml"), "--models-config"),
     hardware_config: Optional[Path] = typer.Option(None, "--hardware-config"),
     output_dir: Path = typer.Option(Path("results/quantization"), "--output-dir", "-o"),
+    quant: Optional[str] = typer.Option(
+        None,
+        "--quant", "-q",
+        help="Specific quantization to test (e.g. fp8, fp4, awq). Tests all if omitted.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run quantization comparison benchmarks."""
     setup_logging(verbose)
+    target_quants = [quant] if quant else None
     out = run_quantization_benchmark(
         matrix_path=config,
         models_path=models_config,
         output_dir=output_dir,
         hardware_path=hardware_config,
+        quantizations=target_quants,
         cli_args=["deploybench", "run-quantization"],
     )
-    console.print(f"[green]Quantization results in[/green] {out}")
 
 
 @app.command("summarize")
@@ -140,11 +146,18 @@ def summarize_cmd(
 def plot_cmd(
     results_dir: Path = typer.Option(Path("results"), "--results-dir", "-r"),
     output_dir: Path = typer.Option(Path("reports/figures"), "--output-dir", "-o"),
+    machine_id: Optional[str] = typer.Option(
+        None,
+        "--machine-id", "-m",
+        help="Filter plots by specific machine ID (e.g., dual5090, 4090)",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Generate matplotlib plots."""
     setup_logging(verbose)
-    created = run_plot(results_dir, output_dir)
+    created = run_plot(results_dir, output_dir, machine_id=machine_id)
+    if not created:
+        console.print("[yellow]No plots generated. Check results directory and filters.[/yellow]")
     for p in created:
         console.print(f"  [cyan]plot[/cyan] -> {p}")
 
