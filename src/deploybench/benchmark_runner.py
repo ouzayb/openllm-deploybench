@@ -50,11 +50,20 @@ def resolve_dynamic_num_prompts(
     workload_id: str,
     hardware: HardwareConfig | None,
     base_num_prompts: int,
+    concurrency: int = 1,
 ) -> int:
     """
     Dynamically resolve optimal num_prompts based on workload type, model
-    architecture, and hardware capacity.
+    architecture, hardware capacity, and concurrency level.
     """
+    # Low-concurrency bounds to avoid prolonged single-stream executions
+    if concurrency == 1:
+        return min(base_num_prompts, 64)
+    if concurrency == 2:
+        return min(base_num_prompts, 128)
+    if concurrency <= 4:
+        return min(base_num_prompts, 256)
+
     workload_name = workload_id.lower()
     model_name = model_id.lower()
     machine_label = (hardware.machine_label if hardware else "").lower()
@@ -271,36 +280,6 @@ def run_serving_benchmark(
                     break
 
                 base_num = getattr(workload, "num_prompts", None) or 512
-                effective_num_prompts = resolve_dynamic_num_prompts(
-                    model_id=model_entry.model_id,
-                    workload_id=workload.id,
-                    hardware=hardware,
-                    base_num_prompts=base_num,
-                )
-
-                try:
-                    dataset_path = generate_synthetic_dataset(
-                        workload, model_spec.hf_id, seed=rt.seed, num_prompts=effective_num_prompts
-                    )
-                except TypeError:
-                    dataset_path = generate_synthetic_dataset(
-                        workload, model_spec.hf_id, seed=rt.seed
-                    )
-                except Exception as e:
-                    et, em = classify_error(e)
-                    fallback_concurrencies = getattr(workload, "concurrency", None) or [1]
-                    for conc in fallback_concurrencies:
-                        _write_failure(
-                            output_path, hardware, repro, versions, probe,
-                            et, em,
-                            model_id=model_entry.model_id,
-                            hf_id=model_spec.hf_id,
-                            workload_id=workload.id,
-                            concurrency=conc,
-                            max_model_len=max_model_len,
-                        )
-                    continue
-
                 prev_metrics: BenchmarkMetrics | None = None
                 patience_counter = 0
                 max_patience = getattr(early_stop_cfg, "patience", 1) if early_stop_cfg else 1
@@ -312,12 +291,31 @@ def run_serving_benchmark(
                 )
 
                 for step_idx, concurrency in enumerate(concurrency_sequence, start=1):
+                    # 1. calculate num_prompts for each concurrency
+                    effective_num_prompts = resolve_dynamic_num_prompts(
+                        model_id=model_entry.model_id,
+                        workload_id=workload.id,
+                        hardware=hardware,
+                        base_num_prompts=base_num,
+                        concurrency=concurrency,
+                    )
+
                     if concurrency > effective_num_prompts:
                         logger.info(
                             "Skipping concurrency %d exceeding effective_num_prompts (%d)",
                             concurrency, effective_num_prompts,
                         )
                         break
+
+                    # 2. Create dataset w.r.t concurrency and effective_num_prompts
+                    try:
+                        dataset_path = generate_synthetic_dataset(
+                            workload, model_spec.hf_id, seed=rt.seed, num_prompts=effective_num_prompts
+                        )
+                    except TypeError:
+                        dataset_path = generate_synthetic_dataset(
+                            workload, model_spec.hf_id, seed=rt.seed
+                        )
 
                     run_id = str(uuid.uuid4())
                     monitor = GPUMonitor(matrix.monitoring.sample_interval_seconds)
