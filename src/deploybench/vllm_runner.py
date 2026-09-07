@@ -239,6 +239,8 @@ def _serve_cli_args(
     port: int,
     host: str,
     enforce_eager: bool,
+    enable_chunked_prefill: bool = False,
+    enable_prefix_caching: bool = False,
 ) -> list[str]:
     args = [
         "serve",
@@ -261,7 +263,12 @@ def _serve_cli_args(
     if enforce_eager:
         args.append("--enforce-eager")
     if quantization:
-        args.extend(["--quantization", quantization])
+        cmd_quant = quantization.lower()
+        args.extend(["--quantization", cmd_quant])
+    if enable_chunked_prefill:
+        args.append("--enable-chunked-prefill")
+    if enable_prefix_caching:
+        args.append("--enable-prefix-caching")
     return args
 
 
@@ -275,7 +282,8 @@ def build_serve_command(
     trust_remote_code: bool,
     port: int,
     host: str,
-    enforce_eager: bool,
+    enforce_eager: bool,enable_chunked_prefill: bool = False,
+    enable_prefix_caching: bool = False,
 ) -> list[str]:
     """Primary vLLM 0.22+ serve command (`vllm serve` console script)."""
     prefixes = _resolve_vllm_argv_prefixes()
@@ -283,7 +291,9 @@ def build_serve_command(
     return prefix + _serve_cli_args(
         hf_id, dtype, max_model_len, tensor_parallel_size,
         gpu_memory_utilization, quantization, trust_remote_code,
-        port, host, enforce_eager,
+        port, host, enforce_eager, 
+        enable_chunked_prefill=enable_chunked_prefill,
+        enable_prefix_caching=enable_prefix_caching,
     )
 
 
@@ -298,12 +308,16 @@ def build_serve_command_variants(
     port: int,
     host: str,
     enforce_eager: bool,
+    enable_chunked_prefill: bool = False,
+    enable_prefix_caching: bool = False,
 ) -> list[list[str]]:
     """All modern `vllm serve` invocation variants to try before legacy api_server."""
     args = _serve_cli_args(
         hf_id, dtype, max_model_len, tensor_parallel_size,
         gpu_memory_utilization, quantization, trust_remote_code,
         port, host, enforce_eager,
+        enable_chunked_prefill=enable_chunked_prefill,
+        enable_prefix_caching=enable_prefix_caching,
     )
     prefixes = _resolve_vllm_argv_prefixes()
     if not prefixes:
@@ -322,6 +336,8 @@ def build_serve_command_legacy(
     port: int,
     host: str,
     enforce_eager: bool,
+    enable_chunked_prefill: bool = False,
+    enable_prefix_caching: bool = False,
 ) -> list[str]:
     """Fallback for older vLLM (<0.22)."""
     cmd = [
@@ -340,6 +356,10 @@ def build_serve_command_legacy(
         cmd.append("--enforce-eager")
     if quantization:
         cmd.extend(["--quantization", quantization])
+    if enable_chunked_prefill:
+        cmd.append("--enable-chunked-prefill")
+    if enable_prefix_caching:
+        cmd.append("--enable-prefix-caching")
     return cmd
 
 
@@ -396,6 +416,8 @@ def start_vllm_server(
     use_v1_engine: bool = False,
     reproducible: bool = False,
     use_flashinfer_sampler: bool | None = None,
+    enable_chunked_prefill: bool = False, 
+    enable_prefix_caching: bool = False,
 ) -> tuple[bool, str, list[str], dict[str, Any]]:
     """Start a vLLM server and return (ok, error, command, server_config).
 
@@ -415,6 +437,8 @@ def start_vllm_server(
             hf_id, dtype, max_model_len, tensor_parallel_size,
             gpu_memory_utilization, quantization, trust_remote_code,
             port, host, enforce_eager,
+            enable_chunked_prefill=enable_chunked_prefill,
+            enable_prefix_caching=enable_prefix_caching,
         )
         env = _vllm_subprocess_env(
             use_v1_engine=use_v1_engine,
@@ -438,11 +462,15 @@ def start_vllm_server(
         hf_id, dtype, max_model_len, tensor_parallel_size,
         gpu_memory_utilization, quantization, trust_remote_code,
         port, host, enforce_eager,
+        enable_chunked_prefill=enable_chunked_prefill,
+        enable_prefix_caching=enable_prefix_caching,
     )
     legacy = build_serve_command_legacy(
         hf_id, dtype, max_model_len, tensor_parallel_size,
         gpu_memory_utilization, quantization, trust_remote_code,
         port, host, enforce_eager,
+        enable_chunked_prefill=enable_chunked_prefill,
+        enable_prefix_caching=enable_prefix_caching,
     )
     if legacy not in attempts:
         attempts.append(legacy)

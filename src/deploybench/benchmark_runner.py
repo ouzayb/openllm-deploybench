@@ -44,6 +44,7 @@ def _generate_dynamic_concurrency(max_cap: int = 2048) -> Iterator[int]:
         yield current_concurrency
         current_concurrency *= 2
 
+
 def resolve_dynamic_num_prompts(
     model_id: str,
     workload_id: str,
@@ -60,37 +61,32 @@ def resolve_dynamic_num_prompts(
     machine_id = (hardware.machine_id if hardware else "").lower()
     is_h200 = "h200" in machine_label or "h200" in machine_id
 
-    # 1. RAG and Long-Context Workloads (Compute-bound prefill phase)
-    # Each request contains 7.6k - 32k tokens, causing high prefill overhead and VRAM usage.
+    # 1. RAG and Long-Context Workloads
     if "rag" in workload_name or "long" in workload_name:
         if is_h200:
-            # H200 has 282GB HBM3e; it can comfortably process deeper batches
             return max(base_num_prompts, 256)
-        # Dual 4090/5090 saturate at lower concurrencies (16-32); keep prompt volume bounded
         return min(base_num_prompts, 128)
 
-    # 2. Coding Workloads (2048 prompt / 1024 output)
+    # 2. Coding Workloads
     if "coding" in workload_name or "code" in workload_name:
         if is_h200:
             return 1024
         return max(base_num_prompts, 256)
 
-    # 3. Standard Chat Workloads - High-end Datacenter Tier (H200)
+    # 3. Standard Chat Workloads - Datacenter Tier (H200)
     if is_h200:
         if "72b" in model_name and "fp8" in model_name:
             return 4096
         return 2048
 
-    # 4. Standard Chat Workloads - Consumer Dual 4090 / Dual 5090 Tier
-    # Small parameter models leave massive KV cache headroom
+    # 4. Standard Chat Workloads - Dual 4090 / 5090 Tier
     if any(size in model_name for size in ["7b", "9b", "12b"]):
         return 1024
 
-    # Quantized models (AWQ, FP8) with large KV cache margin
     if any(q in model_name for q in ["awq", "27b_fp8"]):
         return 1024
 
-    # 5. Dense 14B / 35B models (saturate early around 128-256 concurrency)
+    # 5. Dense 14B / 35B models
     return base_num_prompts
 
 
@@ -139,8 +135,8 @@ def _write_failure(
 
 
 def should_stop_early(
-    current_metrics: Any,
-    prev_metrics: Any | None,
+    current_metrics: BenchmarkMetrics,
+    prev_metrics: BenchmarkMetrics | None,
     early_stop_cfg: Any | None,
     step_index: int,
 ) -> tuple[bool, str]:
@@ -153,13 +149,13 @@ def should_stop_early(
         return False, ""
 
     max_ttft = getattr(early_stop_cfg, "max_ttft_p99_ms", 15000.0)
-    curr_ttft_p99 = getattr(current_metrics, "ttft_p99_ms", None) or getattr(current_metrics, "ttft_mean_ms", 0.0)
-    if curr_ttft_p99 and curr_ttft_p99 > max_ttft:
+    curr_ttft_p99 = current_metrics.ttft_ms_p99 or current_metrics.ttft_ms_p50 or 0.0
+    if curr_ttft_p99 > max_ttft:
         return True, f"P99 TTFT ({curr_ttft_p99:.1f}ms) exceeded threshold ({max_ttft:.1f}ms)"
 
     if prev_metrics:
-        prev_tps = getattr(prev_metrics, "generation_tokens_per_second", 0.0) or getattr(prev_metrics, "tokens_per_second", 0.0)
-        curr_tps = getattr(current_metrics, "generation_tokens_per_second", 0.0) or getattr(current_metrics, "tokens_per_second", 0.0)
+        prev_tps = prev_metrics.output_tokens_per_second or 0.0
+        curr_tps = current_metrics.output_tokens_per_second or 0.0
         tps_threshold = getattr(early_stop_cfg, "tps_improvement_threshold", 0.03)
 
         if prev_tps > 0.0:
@@ -260,10 +256,11 @@ def run_serving_benchmark(
                 enforce_eager=rt.enforce_eager,
                 use_v1_engine=rt.use_v1_engine,
                 reproducible=rt.reproducible,
-                use_flashinfer_sampler=rt.use_flashinfer_sampler,
+                use_flashinfer_sampler=getattr(rt, "use_flashinfer_sampler", False),
+                enable_chunked_prefill=getattr(rt, "enable_chunked_prefill", False),
+                enable_prefix_caching=getattr(rt, "enable_prefix_caching", False),
             )
 
-            # Load server once per model+max_model_len for online mode
             server_loaded = False
             skip_model_len = False
             server_config: dict[str, Any] = {}
@@ -273,24 +270,22 @@ def run_serving_benchmark(
                 if skip_model_len:
                     break
 
-                # Resolve dynamic prompt count based on model, workload type, and hardware
+                base_num = getattr(workload, "num_prompts", None) or 512
                 effective_num_prompts = resolve_dynamic_num_prompts(
                     model_id=model_entry.model_id,
                     workload_id=workload.id,
                     hardware=hardware,
-                    base_num_prompts=workload.num_prompts,
+                    base_num_prompts=base_num,
                 )
 
                 try:
-                    # Pass effective_num_prompts so the generated file has enough prompts
                     dataset_path = generate_synthetic_dataset(
                         workload, model_spec.hf_id, seed=rt.seed, num_prompts=effective_num_prompts
                     )
                 except TypeError:
-                    # Fallback if generate_synthetic_dataset does not take num_prompts argument
                     dataset_path = generate_synthetic_dataset(
                         workload, model_spec.hf_id, seed=rt.seed
-                )
+                    )
                 except Exception as e:
                     et, em = classify_error(e)
                     fallback_concurrencies = getattr(workload, "concurrency", None) or [1]
@@ -310,7 +305,6 @@ def run_serving_benchmark(
                 patience_counter = 0
                 max_patience = getattr(early_stop_cfg, "patience", 1) if early_stop_cfg else 1
 
-                # Select defined concurrency or dynamically sweep powers of two
                 concurrency_sequence = (
                     workload.concurrency
                     if getattr(workload, "concurrency", None)
@@ -318,15 +312,16 @@ def run_serving_benchmark(
                 )
 
                 for step_idx, concurrency in enumerate(concurrency_sequence, start=1):
-                    
                     if concurrency > effective_num_prompts:
                         logger.info(
                             "Skipping concurrency %d exceeding effective_num_prompts (%d)",
                             concurrency, effective_num_prompts,
                         )
-                        break 
+                        break
+
                     run_id = str(uuid.uuid4())
                     monitor = GPUMonitor(matrix.monitoring.sample_interval_seconds)
+
                     try:
                         if rt.mode == "offline":
                             out = run_bench_throughput_offline(
@@ -363,13 +358,9 @@ def run_serving_benchmark(
                                 )
                                 if not ok:
                                     et, em = classify_error(err)
-                                    result = ServingBenchmarkResult(
-                                        run_id=run_id,
-                                        timestamp_utc=utc_now_iso(),
-                                        success=False,
-                                        error_type=et,
-                                        error_message=em,
-                                        **_base_result(hardware, repro, versions, probe),
+                                    _write_failure(
+                                        output_path, hardware, repro, versions, probe,
+                                        et, em,
                                         model_id=model_entry.model_id,
                                         hf_id=model_spec.hf_id,
                                         model_size_class=model_spec.size_class,
@@ -386,20 +377,14 @@ def run_serving_benchmark(
                                         server_config=server_config,
                                         raw={"server_log": str(server_log)},
                                     )
-                                    append_jsonl(output_path, result)
                                     stop_server()
                                     server_loaded = False
                                     skip_model_len = True
                                     break
                                 server_loaded = True
-                                # env_vars is a parent-shell snapshot and can
-                                # disagree with what the server subprocess
-                                # actually launched with; make the recorded env
-                                # reflect the real (server_config) values.
+
                                 if server_config.get("flashinfer_sampler") is not None:
-                                    repro.env_vars["VLLM_USE_FLASHINFER_SAMPLER"] = (
-                                        server_config["flashinfer_sampler"]
-                                    )
+                                    repro.env_vars["VLLM_USE_FLASHINFER_SAMPLER"] = server_config["flashinfer_sampler"]
                                 if server_config.get("vllm_use_v1") is not None:
                                     repro.env_vars["VLLM_USE_V1"] = server_config["vllm_use_v1"]
 
@@ -456,7 +441,7 @@ def run_serving_benchmark(
                             workload_id=workload.id,
                             prompt_tokens_target=workload.prompt_tokens,
                             output_tokens_target=workload.output_tokens,
-                            num_prompts=workload.num_prompts,
+                            num_prompts=effective_num_prompts,
                             concurrency=concurrency,
                             metrics=metrics if isinstance(metrics, BenchmarkMetrics) else metrics,
                             server_config=server_config,
@@ -468,34 +453,32 @@ def run_serving_benchmark(
                             model_entry.model_id, workload.id, concurrency, success,
                         )
 
-                        # Terminate dynamic concurrency sweep if the run failed
                         if not success:
                             logger.warning(
                                 "Run failed at concurrency=%d (%s: %s). Halting sweep.",
-                                concurrency, et, em
+                                concurrency, et, em,
                             )
                             break
 
-                        if success:
-                            should_stop, reason = should_stop_early(
-                                metrics, prev_metrics, early_stop_cfg, step_idx
+                        should_stop, reason = should_stop_early(
+                            metrics, prev_metrics, early_stop_cfg, step_idx
+                        )
+                        if should_stop:
+                            patience_counter += 1
+                            logger.info(
+                                "Early stopping condition triggered (%s). Patience: %d/%d",
+                                reason, patience_counter, max_patience,
                             )
-                            if should_stop:
-                                patience_counter += 1
+                            if patience_counter >= max_patience:
                                 logger.info(
-                                    "Early stopping condition triggered (%s). Patience: %d/%d",
-                                    reason, patience_counter, max_patience,
+                                    "Early stopping sweep for %s on %s at concurrency=%d",
+                                    model_entry.model_id, workload.id, concurrency,
                                 )
-                                if patience_counter >= max_patience:
-                                    logger.info(
-                                        "Early stopping sweep for %s on %s at concurrency=%d",
-                                        model_entry.model_id, workload.id, concurrency,
-                                    )
-                                    break
-                            else:
-                                patience_counter = 0
+                                break
+                        else:
+                            patience_counter = 0
 
-                            prev_metrics = metrics
+                        prev_metrics = metrics
 
                     except Exception as e:
                         et, em = classify_error(e)
@@ -516,11 +499,9 @@ def run_serving_benchmark(
                             num_prompts=effective_num_prompts,
                             concurrency=concurrency,
                         )
-                        # Abort higher concurrencies on unexpected execution failure
                         break
                     finally:
-                        if rt.mode == "offline":
-                            monitor.stop()
+                        monitor.stop()
 
             if rt.mode == "online":
                 stop_server()
