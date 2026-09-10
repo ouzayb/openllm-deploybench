@@ -48,3 +48,8 @@ logs/
 # Temporary local inspection scripts
 parse_results.py
 plot*.py
+
+# Benchmark archives
+archive_runs/
+archive_results/
+

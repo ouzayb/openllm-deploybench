@@ -53,50 +53,26 @@ def resolve_dynamic_num_prompts(
     concurrency: int = 1,
 ) -> int:
     """
-    Dynamically resolve optimal num_prompts based on workload type, model
-    architecture, hardware capacity, and concurrency level.
+    Dynamically resolve optimal num_prompts ensuring the pool is always
+    large enough to support the target concurrency until saturation,
+    regardless of the model architecture.
     """
-    # Low-concurrency bounds to avoid prolonged single-stream executions
-    if concurrency == 1:
-        return min(base_num_prompts, 64)
-    if concurrency == 2:
-        return min(base_num_prompts, 128)
-    if concurrency <= 4:
-        return min(base_num_prompts, 256)
-
     workload_name = workload_id.lower()
-    model_name = model_id.lower()
-    machine_label = (hardware.machine_label if hardware else "").lower()
-    machine_id = (hardware.machine_id if hardware else "").lower()
-    is_h200 = "h200" in machine_label or "h200" in machine_id
 
-    # 1. RAG and Long-Context Workloads
+    # 1. RAG and Long Context Workloads (Heavy prefill, long contexts)
+    # Contexts are large (7680+ tokens), so we cap upper bound to save time & memory,
+    # but ensure it is always strictly greater than concurrency.
     if "rag" in workload_name or "long" in workload_name:
-        if is_h200:
-            return max(base_num_prompts, 256)
-        return min(base_num_prompts, 128)
+        # Guarantee enough prompts to saturate concurrency without starving
+        return max(concurrency * 2, 64)
 
-    # 2. Coding Workloads
+    # 2. Coding Workloads (Medium context: 2048 prompt, 1024 output)
     if "coding" in workload_name or "code" in workload_name:
-        if is_h200:
-            return 1024
-        return max(base_num_prompts, 256)
+        return max(concurrency * 2, 256)
 
-    # 3. Standard Chat Workloads - Datacenter Tier (H200)
-    if is_h200:
-        if "72b" in model_name and "fp8" in model_name:
-            return 4096
-        return 2048
-
-    # 4. Standard Chat Workloads - Dual 4090 / 5090 Tier
-    if any(size in model_name for size in ["7b", "9b", "12b"]):
-        return 1024
-
-    if any(q in model_name for q in ["awq", "27b_fp8"]):
-        return 1024
-
-    # 5. Dense 14B / 35B models
-    return base_num_prompts
+    # 3. Standard Chat Workloads (Short context: 512 prompt, 256 output)
+    # Allows concurrency sweeps to reach 512, 1024, or 2048 across all models
+    return max(base_num_prompts, concurrency * 2, 512)
 
 
 def _base_result(
@@ -144,35 +120,71 @@ def _write_failure(
 
 
 def should_stop_early(
-    current_metrics: BenchmarkMetrics,
-    prev_metrics: BenchmarkMetrics | None,
+    current_metrics: Any,
+    prev_metrics: Any,
     early_stop_cfg: Any | None,
     step_index: int,
-) -> tuple[bool, str]:
-    """Evaluates saturation metrics to determine whether to stop sweeping concurrency."""
+    patience_counter: int = 0,
+) -> tuple[bool, str, int]:
+    """Evaluates saturation metrics and error rates to determine whether to stop sweeping concurrency."""
     if not early_stop_cfg or not getattr(early_stop_cfg, "enabled", False):
-        return False, ""
+        return False, "", patience_counter
 
     min_steps = getattr(early_stop_cfg, "min_concurrency_steps", 3)
     if step_index < min_steps:
-        return False, ""
+        return False, "", patience_counter
 
-    max_ttft = getattr(early_stop_cfg, "max_ttft_p99_ms", 15000.0)
-    curr_ttft_p99 = current_metrics.ttft_ms_p99 or current_metrics.ttft_ms_p50 or 0.0
+    def _extract_metric(obj: Any, *keys: str) -> float:
+        if obj is None:
+            return 0.0
+        for key in keys:
+            prefixed_keys = [key, f"metric_{key}", f"metric_{key.replace('_ms', '')}"]
+            for pk in prefixed_keys:
+                if isinstance(obj, dict) and pk in obj and obj[pk] is not None:
+                    try:
+                        return float(obj[pk])
+                    except (ValueError, TypeError):
+                        continue
+                if hasattr(obj, pk) and getattr(obj, pk) is not None:
+                    try:
+                        return float(getattr(obj, pk))
+                    except (ValueError, TypeError):
+                        continue
+        return 0.0
+
+    # 1. Check Error Rate Threshold
+    max_error_rate = float(getattr(early_stop_cfg, "max_error_rate", 0.05))
+    failed_reqs = _extract_metric(current_metrics, "failed_requests", "error_count")
+    successful_reqs = _extract_metric(current_metrics, "successful_requests", "success_count")
+    total_reqs = successful_reqs + failed_reqs
+    if total_reqs > 0:
+        error_rate = failed_reqs / total_reqs
+        if error_rate > max_error_rate:
+            return True, f"Error rate ({error_rate * 100:.1f}%) exceeded maximum allowed threshold ({max_error_rate * 100:.1f}%)", patience_counter
+
+    # 2. Check TTFT Latency Threshold (P99 or P95)
+    max_ttft = float(getattr(early_stop_cfg, "max_ttft_p99_ms", 60000.0))
+    curr_ttft_p99 = _extract_metric(current_metrics, "ttft_ms_p99", "ttft_p99", "ttft_ms_p95")
     if curr_ttft_p99 > max_ttft:
-        return True, f"P99 TTFT ({curr_ttft_p99:.1f}ms) exceeded threshold ({max_ttft:.1f}ms)"
+        return True, f"P99/P95 TTFT ({curr_ttft_p99:.1f}ms) exceeded threshold ({max_ttft:.1f}ms)", patience_counter
 
+    # 3. Check Throughput Saturation with Patience Logic
     if prev_metrics:
-        prev_tps = prev_metrics.output_tokens_per_second or 0.0
-        curr_tps = current_metrics.output_tokens_per_second or 0.0
-        tps_threshold = getattr(early_stop_cfg, "tps_improvement_threshold", 0.03)
+        prev_tps = _extract_metric(prev_metrics, "output_tokens_per_second", "output_throughput")
+        curr_tps = _extract_metric(current_metrics, "output_tokens_per_second", "output_throughput")
+        tps_threshold = float(getattr(early_stop_cfg, "tps_improvement_threshold", 0.03))
+        max_patience = int(getattr(early_stop_cfg, "patience", 1))
 
         if prev_tps > 0.0:
             improvement = (curr_tps - prev_tps) / prev_tps
             if improvement < tps_threshold:
-                return True, f"TPS saturated: improvement was {improvement * 100:.2f}% (threshold {tps_threshold * 100:.1f}%)"
+                patience_counter += 1
+                if patience_counter >= max_patience:
+                    return True, f"TPS saturated for {patience_counter} consecutive step(s): improvement was {improvement * 100:.2f}% (threshold {tps_threshold * 100:.1f}%)", patience_counter
+            else:
+                patience_counter = 0
 
-    return False, ""
+    return False, "", patience_counter
 
 
 def run_serving_benchmark(
@@ -389,6 +401,12 @@ def run_serving_benchmark(
                             monitor.start()
                             from deploybench.vllm_runner import run_bench_serve
 
+                            # Warmup count capped between 8 and 32 to prevent KV cache saturation and save time
+                            if rt.num_warmups is not None:
+                                resolved_warmups = rt.num_warmups
+                            else:
+                                resolved_warmups = min(max(8, concurrency // 16), 32)
+
                             bench = run_bench_serve(
                                 hf_id=model_spec.hf_id,
                                 dataset_path=dataset_path,
@@ -399,7 +417,7 @@ def run_serving_benchmark(
                                 output_tokens=workload.output_tokens,
                                 seed=rt.seed,
                                 reproducible=rt.reproducible,
-                                num_warmups=rt.num_warmups,
+                                num_warmups=resolved_warmups,
                             )
                             samples = monitor.stop()
                             summary = monitor.summarize(samples)
@@ -458,23 +476,15 @@ def run_serving_benchmark(
                             )
                             break
 
-                        should_stop, reason = should_stop_early(
-                            metrics, prev_metrics, early_stop_cfg, step_idx
+                        should_stop, reason, patience_counter = should_stop_early(
+                            metrics, prev_metrics, early_stop_cfg, step_idx, patience_counter
                         )
                         if should_stop:
-                            patience_counter += 1
                             logger.info(
-                                "Early stopping condition triggered (%s). Patience: %d/%d",
-                                reason, patience_counter, max_patience,
+                                "Early stopping sweep for %s on %s at concurrency=%d: %s",
+                                model_entry.model_id, workload.id, concurrency, reason,
                             )
-                            if patience_counter >= max_patience:
-                                logger.info(
-                                    "Early stopping sweep for %s on %s at concurrency=%d",
-                                    model_entry.model_id, workload.id, concurrency,
-                                )
-                                break
-                        else:
-                            patience_counter = 0
+                            break
 
                         prev_metrics = metrics
 

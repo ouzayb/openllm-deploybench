@@ -1,4 +1,4 @@
-"""Generate standardized, annotated matplotlib plots across hardware and models."""
+"""Generate standardized, annotated matplotlib plots and summary tables across hardware and models."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from deploybench.analysis import _flatten_long_context, _flatten_serving
@@ -14,13 +15,12 @@ from deploybench.utils import find_jsonl_files, read_jsonl
 logger = logging.getLogger(__name__)
 
 
-def _load_serving_df(results_dir: Path, exclude_active_last_file: bool = True) -> pd.DataFrame:
-    """Load and aggregate all serving benchmark jsonl files, excluding ongoing runs."""
+def _load_serving_df(results_dir: Path, exclude_active_last_file: bool = False) -> pd.DataFrame:
+    """Load and aggregate all serving benchmark jsonl files."""
     all_files = sorted(find_jsonl_files(results_dir), key=lambda p: p.stat().st_mtime)
     if not all_files:
         return pd.DataFrame()
 
-    # Exclude the latest modified file to avoid parsing incomplete active writes
     target_files = all_files[:-1] if (exclude_active_last_file and len(all_files) > 1) else all_files
 
     rows: list[dict] = []
@@ -43,12 +43,17 @@ def _load_longctx_df(results_dir: Path) -> pd.DataFrame:
     for path in find_jsonl_files(results_dir):
         data = read_jsonl(path)
         if data and (data[0].get("benchmark_type") == "long_context_needle" or "long_context" in str(path)):
-            rows.extend(data)
+            continue
+        rows.extend(data)
     return _flatten_long_context(rows)
 
 
-def _prepare_cleaned_df(df: pd.DataFrame, machine_id: str | None = None) -> pd.DataFrame:
-    """Clean numeric types, filter successful runs, and resolve hardware display labels."""
+def _prepare_cleaned_df(
+    df: pd.DataFrame, 
+    machine_id: str | None = None,
+    keep_latest_only: bool = True,
+) -> pd.DataFrame:
+    """Clean numeric types, filter successful runs, and retain latest benchmark data."""
     if df.empty or "success" not in df.columns:
         return pd.DataFrame()
 
@@ -56,7 +61,6 @@ def _prepare_cleaned_df(df: pd.DataFrame, machine_id: str | None = None) -> pd.D
     if ok.empty:
         return pd.DataFrame()
 
-    # Hardware label fallback
     if "machine_label" not in ok.columns or ok["machine_label"].isna().all():
         ok["hw_label"] = ok["machine_id"]
     else:
@@ -68,14 +72,27 @@ def _prepare_cleaned_df(df: pd.DataFrame, machine_id: str | None = None) -> pd.D
     numeric_cols = [
         "concurrency",
         "metric_output_tokens_per_second",
+        "metric_total_tokens_per_second",
+        "metric_ttft_ms_p50",
         "metric_ttft_ms_p95",
+        "metric_tpot_ms_p50",
         "metric_tpot_ms_p95",
         "metric_peak_vram_gb",
+        "metric_avg_power_watts",
         "quality_retention",
     ]
     for col in numeric_cols:
         if col in ok.columns:
             ok[col] = pd.to_numeric(ok[col], errors="coerce")
+
+    if keep_latest_only and "timestamp_utc" in ok.columns:
+        ok["timestamp_utc"] = pd.to_datetime(ok["timestamp_utc"], errors="coerce")
+        ok = (
+            ok.sort_values("timestamp_utc")
+            .groupby(["machine_id", "model_id", "workload_id", "concurrency"], as_index=False)
+            .last()
+        )
+        logger.info("Filtered out older runs; retained %d latest benchmark points.", len(ok))
 
     return ok
 
@@ -86,13 +103,18 @@ def _plot_concurrency_curves(
     title_metric: str,
     y_label: str,
     output_path: Path,
+    include_workload_in_label: bool = True,
 ) -> None:
     """Plot concurrency scaling curves with distinct hardware and workload labels."""
     if df.empty or metric_col not in df.columns or "concurrency" not in df.columns:
         return
 
+    group_keys = ["hw_label", "model_id"]
+    if include_workload_in_label and "workload_id" in df.columns:
+        group_keys.append("workload_id")
+
     agg = (
-        df.groupby(["hw_label", "model_id", "workload_id", "concurrency"], as_index=False)[metric_col]
+        df.groupby(group_keys + ["concurrency"], as_index=False)[metric_col]
         .mean()
         .dropna(subset=[metric_col, "concurrency"])
     )
@@ -100,11 +122,19 @@ def _plot_concurrency_curves(
         return
 
     fig, ax = plt.subplots(figsize=(11, 6), dpi=150)
-    groups = agg.groupby(["hw_label", "model_id", "workload_id"])
+    groups = agg.groupby(group_keys)
 
-    for (hw, model, workload), grp in groups:
+    for keys, grp in groups:
+        if isinstance(keys, str):
+            keys = (keys,)
+        hw, model = keys[0], keys[1]
+        workload = keys[2] if len(keys) > 2 else None
+
+        trace_label = f"[{hw}] {model}"
+        if workload:
+            trace_label += f" ({workload})"
+
         grp_sorted = grp.sort_values("concurrency")
-        trace_label = f"[{hw}] {model} ({workload})"
         ax.plot(
             grp_sorted["concurrency"],
             grp_sorted[metric_col],
@@ -140,6 +170,127 @@ def _plot_concurrency_curves(
     logger.info("Wrote %s", output_path)
 
 
+def _plot_concurrency_curves_zoomed(
+    df: pd.DataFrame,
+    metric_col: str,
+    title_metric: str,
+    y_label: str,
+    output_path: Path,
+    max_y_limit: float = 45000.0,
+    include_workload_in_label: bool = True,
+) -> None:
+    """Plot zoomed-in concurrency curves filtering out extreme tail latencies for clarity."""
+    if df.empty or metric_col not in df.columns or "concurrency" not in df.columns:
+        return
+
+    group_keys = ["hw_label", "model_id"]
+    if include_workload_in_label and "workload_id" in df.columns:
+        group_keys.append("workload_id")
+
+    agg = (
+        df.groupby(group_keys + ["concurrency"], as_index=False)[metric_col]
+        .mean()
+        .dropna(subset=[metric_col, "concurrency"])
+    )
+    if agg.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(11, 6), dpi=150)
+    groups = agg.groupby(group_keys)
+
+    for keys, grp in groups:
+        if isinstance(keys, str):
+            keys = (keys,)
+        hw, model = keys[0], keys[1]
+        workload = keys[2] if len(keys) > 2 else None
+
+        trace_label = f"[{hw}] {model}"
+        if workload:
+            trace_label += f" ({workload})"
+
+        grp_sorted = grp.sort_values("concurrency")
+        ax.plot(
+            grp_sorted["concurrency"],
+            grp_sorted[metric_col],
+            marker="o",
+            linewidth=2,
+            markersize=6,
+            label=trace_label,
+        )
+        for _, row in grp_sorted.iterrows():
+            val = row[metric_col]
+            if val <= max_y_limit:
+                text = f"{int(val)}" if val >= 10 else f"{val:.1f}"
+                ax.annotate(
+                    text,
+                    (row["concurrency"], val),
+                    textcoords="offset points",
+                    xytext=(0, 6),
+                    ha="center",
+                    fontsize=7,
+                    fontweight="bold",
+                )
+
+    ax.set_title(f"{title_metric} vs Concurrency (Zoomed View)", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Concurrency (Concurrent Streams)", fontsize=10)
+    ax.set_ylabel(y_label, fontsize=10)
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(sorted(agg["concurrency"].unique()))
+    ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+    ax.set_ylim(0, max_y_limit)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend(frameon=True, fontsize=8, loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    logger.info("Wrote zoomed plot %s", output_path)
+
+
+def _plot_heatmap(
+    df: pd.DataFrame,
+    metric_col: str,
+    title: str,
+    output_path: Path,
+) -> None:
+    """Generate a heatmap representation of metrics across configurations and concurrency."""
+    if df.empty or metric_col not in df.columns or "concurrency" not in df.columns:
+        return
+
+    df["config_label"] = "[" + df["hw_label"].astype(str) + "] " + df["model_id"].astype(str) + " (" + df["workload_id"].astype(str) + ")"
+    
+    pivot = df.pivot_table(index="config_label", columns="concurrency", values=metric_col, aggfunc="mean")
+    if pivot.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(12, max(6, len(pivot) * 0.5)), dpi=150)
+    cax = ax.imshow(pivot.values, cmap="YlOrRd", aspect="auto")
+
+    ax.set_xticks(np.arange(len(pivot.columns)))
+    ax.set_xticklabels(pivot.columns)
+    ax.set_yticks(np.arange(len(pivot.index)))
+    ax.set_yticklabels(pivot.index, fontsize=8)
+
+    plt.xticks(rotation=30, ha="right")
+    ax.set_title(f"{title} (Heatmap)", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Concurrency", fontsize=10)
+    ax.set_ylabel("Configuration", fontsize=10)
+
+    # Annotate values inside cells
+    for i in range(len(pivot.index)):
+        for j in range(len(pivot.columns)):
+            val = pivot.iloc[i, j]
+            if pd.notna(val):
+                text_color = "white" if val > pivot.values[~np.isnan(pivot.values)].mean() else "black"
+                ax.text(j, i, f"{int(val)}" if val >= 10 else f"{val:.1f}",
+                        ha="center", va="center", color=text_color, fontsize=7, fontweight="bold")
+
+    fig.colorbar(cax, ax=ax, label=metric_col.replace("metric_", "").replace("_", " ").title())
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    logger.info("Wrote heatmap %s", output_path)
+
+
 def _plot_grouped_bar(
     df: pd.DataFrame,
     category_col: str,
@@ -153,15 +304,15 @@ def _plot_grouped_bar(
     if df.empty or metric_col not in df.columns or category_col not in df.columns:
         return
 
-    agg = (
-        df.groupby([category_col, group_col], as_index=False)[metric_col]
-        .max()
-        .dropna(subset=[metric_col])
-    )
+    valid_df = df.dropna(subset=[metric_col]).copy()
+    if valid_df.empty:
+        return
+
+    agg = valid_df.groupby([category_col, group_col], as_index=False)[metric_col].max()
     if agg.empty:
         return
 
-    pivot = agg.pivot(index=category_col, columns=group_col, values=metric_col)
+    pivot = agg.pivot(index=category_col, columns=group_col, values=metric_col).fillna(0)
     if pivot.empty:
         return
 
@@ -183,6 +334,56 @@ def _plot_grouped_bar(
     logger.info("Wrote %s", output_path)
 
 
+def _export_summary_tables(df: pd.DataFrame, output_dir: Path, prefix: str) -> list[Path]:
+    """Generate markdown and CSV summary tables across models, workloads, and concurrency levels."""
+    if df.empty:
+        return []
+
+    cols_to_keep = [
+        "hw_label",
+        "model_id",
+        "workload_id",
+        "concurrency",
+        "metric_output_tokens_per_second",
+        "metric_ttft_ms_p50",
+        "metric_ttft_ms_p95",
+        "metric_tpot_ms_p50",
+        "metric_tpot_ms_p95",
+        "metric_peak_vram_gb",
+        "metric_avg_power_watts",
+    ]
+    available_cols = [c for c in cols_to_keep if c in df.columns]
+    table_df = df[available_cols].copy()
+
+    rename_map = {
+        "hw_label": "Hardware",
+        "model_id": "Model",
+        "workload_id": "Workload",
+        "concurrency": "Concurrency",
+        "metric_output_tokens_per_second": "Output Tok/s",
+        "metric_ttft_ms_p50": "TTFT P50 (ms)",
+        "metric_ttft_ms_p95": "TTFT P95 (ms)",
+        "metric_tpot_ms_p50": "TPOT P50 (ms)",
+        "metric_tpot_ms_p95": "TPOT P95 (ms)",
+        "metric_peak_vram_gb": "Peak VRAM (GB)",
+        "metric_avg_power_watts": "Avg Power (W)",
+    }
+    table_df = table_df.rename(columns=rename_map)
+    table_df = table_df.sort_values(by=["Workload", "Model", "Concurrency"], ascending=[True, True, True])
+
+    csv_path = output_dir / f"{prefix}benchmark_summary_table.csv"
+    md_path = output_dir / f"{prefix}benchmark_summary_table.md"
+
+    table_df.round(2).to_csv(csv_path, index=False)
+    
+    with md_path.open("w", encoding="utf-8") as f:
+        f.write(f"# Benchmark Summary Table\n\n")
+        f.write(table_df.round(2).to_markdown(index=False))
+
+    logger.info("Exported summary tables: %s and %s", csv_path, md_path)
+    return [csv_path, md_path]
+
+
 def run_plot(
     results_dir: Path,
     output_dir: Path,
@@ -193,8 +394,8 @@ def run_plot(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_serving = _load_serving_df(results_dir, exclude_active_last_file=True)
-    ok = _prepare_cleaned_df(raw_serving, machine_id=machine_id)
+    raw_serving = _load_serving_df(results_dir, exclude_active_last_file=False)
+    ok = _prepare_cleaned_df(raw_serving, machine_id=machine_id, keep_latest_only=True)
     longctx = _load_longctx_df(results_dir)
 
     if machine_id and not longctx.empty and "machine_id" in longctx.columns:
@@ -207,20 +408,59 @@ def run_plot(
         hw_tag = f"[{ok['hw_label'].iloc[0]}]" if machine_id else "[Cross Hardware]"
 
         # -------------------------------------------------------------
-        # 1. Concurrency Curves (Throughput, TTFT, TPOT)
+        # 1. Overall Combined Concurrency Curves & Heatmaps
         # -------------------------------------------------------------
         scaling_plots = [
-            (f"{prefix}concurrency_throughput.png", "metric_output_tokens_per_second", f"{hw_tag} Throughput Scaling", "Output Tokens / sec"),
-            (f"{prefix}concurrency_ttft_p95.png", "metric_ttft_ms_p95", f"{hw_tag} P95 TTFT Latency", "P95 TTFT (ms)"),
-            (f"{prefix}concurrency_tpot_p95.png", "metric_tpot_ms_p95", f"{hw_tag} P95 TPOT Latency", "P95 TPOT (ms)"),
+            (f"{prefix}concurrency_throughput_all.png", "metric_output_tokens_per_second", f"{hw_tag} Overall Throughput Scaling", "Output Tokens / sec"),
+            (f"{prefix}concurrency_ttft_p95_all.png", "metric_ttft_ms_p95", f"{hw_tag} Overall P95 TTFT Latency", "P95 TTFT (ms)"),
+            (f"{prefix}concurrency_tpot_p95_all.png", "metric_tpot_ms_p95", f"{hw_tag} Overall P95 TPOT Latency", "P95 TPOT (ms)"),
         ]
         for fname, metric, title, ylabel in scaling_plots:
             p = output_dir / fname
-            _plot_concurrency_curves(ok, metric, title, ylabel, p)
+            _plot_concurrency_curves(ok, metric, title, ylabel, p, include_workload_in_label=True)
             created.append(p)
 
+            # Heatmap eşlikçisi
+            p_hm = output_dir / fname.replace(".png", "_heatmap.png")
+            _plot_heatmap(ok, metric, title, p_hm)
+            created.append(p_hm)
+
+        # Zoomed TTFT plot for lower dense curves
+        p_zoomed = output_dir / f"{prefix}concurrency_ttft_p95_all_zoomed.png"
+        _plot_concurrency_curves_zoomed(
+            ok, 
+            "metric_ttft_ms_p95", 
+            f"{hw_tag} Overall P95 TTFT Latency (Zoomed)", 
+            "P95 TTFT (ms)", 
+            p_zoomed, 
+            max_y_limit=45000.0,
+            include_workload_in_label=True
+        )
+        created.append(p_zoomed)
+
         # -------------------------------------------------------------
-        # 2. Workload Breakdown (Chat vs Coding vs RAG)
+        # 2. Per-Workload Isolated Curves
+        # -------------------------------------------------------------
+        if "workload_id" in ok.columns:
+            workloads_dir = output_dir / "workloads"
+            workloads_dir.mkdir(parents=True, exist_ok=True)
+
+            for w_id, w_df in ok.groupby("workload_id"):
+                w_tag = f"{hw_tag} [{w_id.upper()}]"
+                w_prefix = f"{prefix}{w_id}_"
+
+                w_plots = [
+                    (f"{w_prefix}throughput.png", "metric_output_tokens_per_second", f"{w_tag} Throughput Scaling", "Output Tokens / sec"),
+                    (f"{w_prefix}ttft_p95.png", "metric_ttft_ms_p95", f"{w_tag} P95 TTFT Latency", "P95 TTFT (ms)"),
+                    (f"{w_prefix}tpot_p95.png", "metric_tpot_ms_p95", f"{w_tag} P95 TPOT Latency", "P95 TPOT (ms)"),
+                ]
+                for fname, metric, title, ylabel in w_plots:
+                    p = workloads_dir / fname
+                    _plot_concurrency_curves(w_df, metric, title, ylabel, p, include_workload_in_label=False)
+                    created.append(p)
+
+        # -------------------------------------------------------------
+        # 3. Workload Breakdown (Grouped Bars)
         # -------------------------------------------------------------
         if "workload_id" in ok.columns:
             ok["model_with_hw"] = ok["hw_label"] + " | " + ok["model_id"]
@@ -237,7 +477,7 @@ def run_plot(
             created.append(p)
 
         # -------------------------------------------------------------
-        # 3. Peak Hardware Comparison (Across Devices)
+        # 4. Cross Hardware Comparison
         # -------------------------------------------------------------
         if not machine_id and "hw_label" in ok.columns:
             p = output_dir / "throughput_by_hardware.png"
@@ -265,7 +505,7 @@ def run_plot(
             created.append(p)
 
         # -------------------------------------------------------------
-        # 4. Peak VRAM Footprint
+        # 5. Peak VRAM Footprint
         # -------------------------------------------------------------
         if "metric_peak_vram_gb" in ok.columns:
             ok["model_with_hw"] = ok["hw_label"] + " | " + ok["model_id"]
@@ -285,7 +525,7 @@ def run_plot(
                 created.append(p)
 
         # -------------------------------------------------------------
-        # 5. Price-Performance & Owned vs Rented Relative Plots
+        # 6. Price-Performance & Relative Plots
         # -------------------------------------------------------------
         summary_candidates = [
             results_dir.parent / "reports" / "summary_price_performance.csv",
@@ -340,7 +580,7 @@ def run_plot(
                 created.append(p)
 
         # -------------------------------------------------------------
-        # 6. Quality Retention vs Throughput
+        # 7. Quality Retention vs Throughput
         # -------------------------------------------------------------
         if "quality_retention" in ok.columns and ok["quality_retention"].notna().any():
             fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
@@ -363,8 +603,14 @@ def run_plot(
             plt.close(fig)
             created.append(p)
 
+        # -------------------------------------------------------------
+        # 8. Summary Table Export (CSV & Markdown)
+        # -------------------------------------------------------------
+        tables = _export_summary_tables(ok, output_dir, prefix)
+        created.extend(tables)
+
     # -------------------------------------------------------------
-    # 7. Long Context Needle-in-a-Haystack Metrics
+    # 9. Long Context Needle-in-a-Haystack Metrics
     # -------------------------------------------------------------
     if not longctx.empty:
         ok_lc = longctx[longctx["success"] == True] if "success" in longctx.columns else longctx  # noqa: E712

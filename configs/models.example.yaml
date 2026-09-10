@@ -64,6 +64,15 @@ models:
     notes: "Qwen 2.5 32B AWQ official release, optimal headroom for Dual 4090/5090"
 
   # Target: Dual 5090, Dual H200
+  - id: "qwen2_5_72b_instruct_awq"
+    hf_id: "Qwen/Qwen2.5-72B-Instruct-AWQ"
+    size_class: "72B"
+    default_dtype: "auto"
+    quantization: "awq"
+    tensor_parallel_size: 2
+    trust_remote_code: true
+    notes: "Qwen 2.5 72B AWQ, extreme VRAM & PCIe stress test for Dual 5090" #for first test: max_model_len:- 8192
+
   - id: "qwen3_5_27b_fp8"
     hf_id: "Qwen/Qwen3.5-27B-FP8"
     size_class: "27B"

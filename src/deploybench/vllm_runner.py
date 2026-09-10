@@ -858,7 +858,7 @@ def run_bench_serve(
         if profile["skip_template"]:
             bench_args.append("--custom-skip-chat-template")
         commands = _build_vllm_bench_commands("serve", bench_args)
-        last_result = _run_command_attempts(commands, timeout=3600)
+        last_result = _run_command_attempts(commands, timeout=7200)
         last_result["bench_profile"] = profile["label"]
         if last_result.get("returncode") == 0:
             break
