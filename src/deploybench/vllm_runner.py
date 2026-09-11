@@ -12,7 +12,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,8 +32,13 @@ logger = logging.getLogger(__name__)
 
 _active_server: subprocess.Popen | None = None
 
+# During high-concurrency stress tests, large models may exceed standard runtimes
+# (e.g., Qwen-72B on Dual RTX 5090 requires ~7200s). Default baseline is 3600s.
+DEFAULT_SUBPROCESS_TIMEOUT_SEC: int = 3600  
+
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Terminate or kill a process and its children cleanly."""
     if proc.poll() is not None:
         return
     try:
@@ -51,7 +55,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             except subprocess.TimeoutExpired:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError) as e:
-        logger.debug("Kill process: %s", e)
+        logger.debug("Kill process tree error: %s", e)
         try:
             proc.kill()
         except OSError:
@@ -115,7 +119,6 @@ def _extract_vllm_failure_excerpt(log_path: Path, max_lines: int = 80) -> str:
             excerpt_lines = excerpt_lines[-max_lines:]
         return "\n".join(excerpt_lines)
 
-    # Skip repetitive APIServer-only tail if a non-APIServer traceback exists earlier
     non_api = [ln for ln in lines if "(APIServer pid=" not in ln]
     if len(non_api) > 20:
         return "\n".join(non_api[-max_lines:])
@@ -127,7 +130,7 @@ def _tail_log(log_path: Path, lines: int = 40) -> str:
 
 
 def _resolve_vllm_argv_prefixes() -> list[list[str]]:
-    """vLLM 0.22+ exposes `vllm serve` via console script, not `python -m vllm`."""
+    """vLLM 0.22+ exposes `vllm serve` via console script or module entrypoint."""
     prefixes: list[list[str]] = []
     seen: set[tuple[str, ...]] = set()
 
@@ -158,27 +161,17 @@ def _resolve_vllm_argv_prefixes() -> list[list[str]]:
 
 
 def _build_vllm_bench_commands(subcommand: str, args: list[str]) -> list[list[str]]:
-    """Build `vllm bench <subcommand>` command variants (0.22+ CLI + legacy modules)."""
+    """Build `vllm bench <subcommand>` command variants."""
     bench_tail = ["bench", subcommand] + args
     commands: list[list[str]] = []
     seen: set[tuple[str, ...]] = set()
 
-    def add(cmd: list[str]) -> None:
+    for prefix in _resolve_vllm_argv_prefixes():
+        cmd = prefix + bench_tail
         key = tuple(cmd)
         if key not in seen:
             seen.add(key)
             commands.append(cmd)
-
-    for prefix in _resolve_vllm_argv_prefixes():
-        add(prefix + bench_tail)
-
-    legacy_modules = {
-        "serve": "vllm.benchmarks.bench_serve",
-        "throughput": "vllm.benchmarks.bench_throughput",
-    }
-    legacy_mod = legacy_modules.get(subcommand)
-    if legacy_mod:
-        add([sys.executable, "-m", legacy_mod] + args)
 
     return commands
 
@@ -186,7 +179,7 @@ def _build_vllm_bench_commands(subcommand: str, args: list[str]) -> list[list[st
 def _run_command_attempts(
     commands: list[list[str]],
     *,
-    timeout: int,
+    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SEC,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run commands in order; stop on first success."""
@@ -263,8 +256,7 @@ def _serve_cli_args(
     if enforce_eager:
         args.append("--enforce-eager")
     if quantization:
-        cmd_quant = quantization.lower()
-        args.extend(["--quantization", cmd_quant])
+        args.extend(["--quantization", quantization.lower()])
     if enable_chunked_prefill:
         args.append("--enable-chunked-prefill")
     if enable_prefix_caching:
@@ -282,16 +274,24 @@ def build_serve_command(
     trust_remote_code: bool,
     port: int,
     host: str,
-    enforce_eager: bool,enable_chunked_prefill: bool = False,
+    enforce_eager: bool,
+    enable_chunked_prefill: bool = False,
     enable_prefix_caching: bool = False,
 ) -> list[str]:
     """Primary vLLM 0.22+ serve command (`vllm serve` console script)."""
     prefixes = _resolve_vllm_argv_prefixes()
     prefix = prefixes[0] if prefixes else [sys.executable, "-m", "vllm.entrypoints.cli.main"]
     return prefix + _serve_cli_args(
-        hf_id, dtype, max_model_len, tensor_parallel_size,
-        gpu_memory_utilization, quantization, trust_remote_code,
-        port, host, enforce_eager, 
+        hf_id,
+        dtype,
+        max_model_len,
+        tensor_parallel_size,
+        gpu_memory_utilization,
+        quantization,
+        trust_remote_code,
+        port,
+        host,
+        enforce_eager,
         enable_chunked_prefill=enable_chunked_prefill,
         enable_prefix_caching=enable_prefix_caching,
     )
@@ -313,9 +313,16 @@ def build_serve_command_variants(
 ) -> list[list[str]]:
     """All modern `vllm serve` invocation variants to try before legacy api_server."""
     args = _serve_cli_args(
-        hf_id, dtype, max_model_len, tensor_parallel_size,
-        gpu_memory_utilization, quantization, trust_remote_code,
-        port, host, enforce_eager,
+        hf_id,
+        dtype,
+        max_model_len,
+        tensor_parallel_size,
+        gpu_memory_utilization,
+        quantization,
+        trust_remote_code,
+        port,
+        host,
+        enforce_eager,
         enable_chunked_prefill=enable_chunked_prefill,
         enable_prefix_caching=enable_prefix_caching,
     )
@@ -339,23 +346,32 @@ def build_serve_command_legacy(
     enable_chunked_prefill: bool = False,
     enable_prefix_caching: bool = False,
 ) -> list[str]:
-    """Fallback for older vLLM (<0.22)."""
+    """Fallback for legacy vLLM (<0.22)."""
     cmd = [
-        sys.executable, "-m", "vllm.entrypoints.openai.api_server",
-        "--model", hf_id,
-        "--dtype", dtype,
-        "--max-model-len", str(max_model_len),
-        "--tensor-parallel-size", str(tensor_parallel_size),
-        "--gpu-memory-utilization", str(gpu_memory_utilization),
-        "--port", str(port),
-        "--host", host,
+        sys.executable,
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        hf_id,
+        "--dtype",
+        dtype,
+        "--max-model-len",
+        str(max_model_len),
+        "--tensor-parallel-size",
+        str(tensor_parallel_size),
+        "--gpu-memory-utilization",
+        str(gpu_memory_utilization),
+        "--port",
+        str(port),
+        "--host",
+        host,
     ]
     if trust_remote_code:
         cmd.append("--trust-remote-code")
     if enforce_eager:
         cmd.append("--enforce-eager")
     if quantization:
-        cmd.extend(["--quantization", quantization])
+        cmd.extend(["--quantization", quantization.lower()])
     if enable_chunked_prefill:
         cmd.append("--enable-chunked-prefill")
     if enable_prefix_caching:
@@ -364,14 +380,13 @@ def build_serve_command_legacy(
 
 
 def _parse_attention_backend(log_path: Path) -> str | None:
-    """Best-effort extraction of the attention backend vLLM selected (varies per GPU)."""
+    """Best-effort extraction of the attention backend vLLM selected."""
     try:
         text = log_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
     m = re.search(r"Using (.+?) backend", text)
     if m:
-        # Strip a trailing "attention" word, e.g. "FLASH_ATTN attention" -> "FLASH_ATTN".
         return re.sub(r"\s+attention$", "", m.group(1).strip(), flags=re.IGNORECASE)
     m = re.search(r"attn[_ ]backend[=:]\s*([A-Za-z0-9_]+)", text, re.IGNORECASE)
     if m:
@@ -388,7 +403,7 @@ def _server_config(
     *,
     reproducible: bool,
 ) -> dict[str, Any]:
-    """Record the configuration a vLLM server actually launched with."""
+    """Record the runtime configuration a vLLM server launched with."""
     return {
         "reproducible": reproducible,
         "env_label": label,
@@ -416,27 +431,27 @@ def start_vllm_server(
     use_v1_engine: bool = False,
     reproducible: bool = False,
     use_flashinfer_sampler: bool | None = None,
-    enable_chunked_prefill: bool = False, 
+    enable_chunked_prefill: bool = False,
     enable_prefix_caching: bool = False,
 ) -> tuple[bool, str, list[str], dict[str, Any]]:
-    """Start a vLLM server and return (ok, error, command, server_config).
-
-    In reproducible mode a single pinned (command, env) is launched and the
-    server must come up or the run fails: no command/env fallback cascade, so
-    every device measures the same engine configuration. `server_config`
-    records what actually ran (V1 engine, FlashInfer sampler, enforce_eager,
-    attention backend) so each result row is self-documenting.
-    """
+    """Start a vLLM server instance and return lifecycle metadata."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         if s.connect_ex((host, port)) == 0:
             return False, f"Port {port} is already in use by another process", [], {}
-            
+
     if reproducible:
-        flashinfer_on = bool(use_flashinfer_sampler)  # None -> off (portable)
+        flashinfer_on = bool(use_flashinfer_sampler)
         cmd = build_serve_command(
-            hf_id, dtype, max_model_len, tensor_parallel_size,
-            gpu_memory_utilization, quantization, trust_remote_code,
-            port, host, enforce_eager,
+            hf_id,
+            dtype,
+            max_model_len,
+            tensor_parallel_size,
+            gpu_memory_utilization,
+            quantization,
+            trust_remote_code,
+            port,
+            host,
+            enforce_eager,
             enable_chunked_prefill=enable_chunked_prefill,
             enable_prefix_caching=enable_prefix_caching,
         )
@@ -445,35 +460,49 @@ def start_vllm_server(
             use_flashinfer_sampler=flashinfer_on,
         )
         ok, err = start_server(
-            cmd, log_path, startup_timeout_sec, host, port, vllm_env=env,
+            cmd, log_path, startup_timeout_sec, host, port, vllm_env=env
         )
         server_config = _server_config(
             "pinned", cmd, env, enforce_eager, log_path, reproducible=True
         )
         if not ok:
             logger.error(
-                "Reproducible mode: pinned vLLM config failed to start; "
-                "NOT falling back (strict). %s",
+                "Reproducible mode: pinned vLLM config failed to start; NOT falling back. %s",
                 err.splitlines()[0] if err else "",
             )
         return ok, err, cmd, server_config
 
     attempts = build_serve_command_variants(
-        hf_id, dtype, max_model_len, tensor_parallel_size,
-        gpu_memory_utilization, quantization, trust_remote_code,
-        port, host, enforce_eager,
+        hf_id,
+        dtype,
+        max_model_len,
+        tensor_parallel_size,
+        gpu_memory_utilization,
+        quantization,
+        trust_remote_code,
+        port,
+        host,
+        enforce_eager,
         enable_chunked_prefill=enable_chunked_prefill,
         enable_prefix_caching=enable_prefix_caching,
     )
     legacy = build_serve_command_legacy(
-        hf_id, dtype, max_model_len, tensor_parallel_size,
-        gpu_memory_utilization, quantization, trust_remote_code,
-        port, host, enforce_eager,
+        hf_id,
+        dtype,
+        max_model_len,
+        tensor_parallel_size,
+        gpu_memory_utilization,
+        quantization,
+        trust_remote_code,
+        port,
+        host,
+        enforce_eager,
         enable_chunked_prefill=enable_chunked_prefill,
         enable_prefix_caching=enable_prefix_caching,
     )
     if legacy not in attempts:
         attempts.append(legacy)
+
     if use_v1_engine:
         env_attempts = [
             ("default", _vllm_subprocess_env(use_v1_engine=True)),
@@ -484,7 +513,6 @@ def start_vllm_server(
             ),
         ]
     else:
-        # Try native vLLM defaults first (matches manual `vllm serve`), then fallbacks
         env_attempts = [
             ("native", _vllm_subprocess_env()),
             (
@@ -493,7 +521,7 @@ def start_vllm_server(
             ),
             ("legacy", _vllm_subprocess_env(use_v1_engine=False)),
         ]
-    # Deduplicate identical env dicts
+
     seen: set[tuple[tuple[str, str], ...]] = set()
     unique_env_attempts: list[tuple[str, dict[str, str] | None]] = []
     for label, env in env_attempts:
@@ -519,7 +547,11 @@ def start_vllm_server(
                 if label != "default":
                     logger.info("Server started with fallback env: %s", label)
                 server_config = _server_config(
-                    label, cmd, vllm_env or {}, enforce_eager, log_path,
+                    label,
+                    cmd,
+                    vllm_env or {},
+                    enforce_eager,
+                    log_path,
                     reproducible=False,
                 )
                 return True, "", cmd, server_config
@@ -555,7 +587,7 @@ def _vllm_subprocess_env(
     use_flashinfer_sampler: bool | None = None,
     extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Environment for vLLM child processes (CUDA toolkit + FlashInfer when nvcc exists)."""
+    """Configure environment for vLLM child processes."""
     from deploybench.utils import load_project_cuda_env
 
     load_project_cuda_env()
@@ -568,8 +600,6 @@ def _vllm_subprocess_env(
         env["LD_LIBRARY_PATH"] = f"{lib}:{env.get('LD_LIBRARY_PATH', '')}"
 
     if use_flashinfer_sampler is None:
-        # nvcc from apt (CUDA 12) often breaks FlashInfer JIT on H200 (CUB FlagHeads).
-        # Default off even if scripts/env.cuda.sh still has =1; opt in via DEPLOYBENCH_ENABLE_FLASHINFER_SAMPLER=1
         enable_fi = os.environ.get("DEPLOYBENCH_ENABLE_FLASHINFER_SAMPLER", "").strip().lower()
         if enable_fi in ("1", "true", "yes") and cuda_home and shutil.which("nvcc"):
             env["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
@@ -600,6 +630,7 @@ def start_server(
     vllm_env: dict[str, str] | None = None,
     append_log: bool = False,
 ) -> tuple[bool, str]:
+    """Launch background vLLM process and await health check endpoint."""
     global _active_server
     _cleanup_server()
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -676,12 +707,19 @@ def _load_prompts_from_dataset(dataset_path: Path, num_prompts: int) -> list[str
 
 
 def _is_instruct_model(hf_id: str) -> bool:
+    """Identify conversational models across Qwen, Gemma, Llama, and Mistral architectures."""
     name = hf_id.lower()
-    return "instruct" in name or "chat" in name
+    if any(k in name for k in ("instruct", "chat")):
+        return True
+    if re.search(r"[-_]it(\b|[-_])", name):
+        return True
+    if any(arch in name for arch in ("qwen3.5", "qwen3_5")):
+        return True
+    return False
 
 
 def _bench_serve_profiles(hf_id: str) -> list[dict[str, Any]]:
-    """CLI profiles to try; chat API first for Instruct models."""
+    """Determine compatible endpoints for modern vLLM bench CLI execution."""
     if _is_instruct_model(hf_id):
         return [
             {
@@ -689,27 +727,16 @@ def _bench_serve_profiles(hf_id: str) -> list[dict[str, Any]]:
                 "backend": "openai-chat",
                 "endpoint": "/v1/chat/completions",
                 "skip_template": False,
-            },
-            {
-                "label": "vllm-chat",
-                "backend": "vllm",
-                "endpoint": "/v1/chat/completions",
-                "skip_template": False,
-            },
-            {
-                "label": "vllm-completions",
-                "backend": "vllm",
-                "endpoint": "/v1/completions",
-                "skip_template": True,
-            },
+            }
         ]
+
     return [
         {
-            "label": "vllm-completions",
-            "backend": "vllm",
+            "label": "openai-completions",
+            "backend": "openai",
             "endpoint": "/v1/completions",
             "skip_template": True,
-        },
+        }
     ]
 
 
@@ -721,8 +748,9 @@ def run_bench_serve_http(
     host: str,
     port: int,
     output_tokens: int,
+    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SEC,
 ) -> dict[str, Any]:
-    """Direct OpenAI HTTP benchmark when `vllm bench serve` is unavailable or fails."""
+    """Direct OpenAI HTTP client benchmark fallback."""
     prompts = _load_prompts_from_dataset(dataset_path, num_prompts)
     if not prompts:
         return {
@@ -759,7 +787,7 @@ def run_bench_serve_http(
                     "max_tokens": output_tokens,
                     "temperature": 0,
                 }
-            resp = requests.post(url, json=payload, timeout=1800)
+            resp = requests.post(url, json=payload, timeout=timeout)
             resp.raise_for_status()
             return (time.perf_counter() - t0) * 1000.0
 
@@ -812,32 +840,34 @@ def run_bench_serve(
     result_dir: Path | None = None,
     reproducible: bool = False,
     num_warmups: int = 0,
+    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SEC,
 ) -> dict[str, Any]:
-    """Run vllm bench serve against a running server.
-
-    In reproducible mode only the first (canonical) bench profile is used and
-    there is NO HTTP fallback: if `vllm bench serve` fails the run fails, so a
-    paper never mixes CLI numbers with the different client-side HTTP method.
-    """
+    """Execute vllm bench serve against an active server process."""
     common_args = [
-        "--model", hf_id,
-        "--dataset-name", "custom",
-        "--dataset-path", str(dataset_path),
-        "--num-prompts", str(num_prompts),
-        "--max-concurrency", str(max_concurrency),
-        "--port", str(port),
-        "--host", host,
-        "--seed", str(seed),
-        "--custom-output-len", str(output_tokens),
-        # Ask vLLM for the percentiles/metrics we report; otherwise it only
-        # emits Mean/Median/P99 for TTFT/TPOT/ITL and no E2EL block at all,
-        # leaving p95 and e2e_latency_* unparseable.
-        "--percentile-metrics", "ttft,tpot,itl,e2el",
-        "--metric-percentiles", "50,95,99",
+        "--model",
+        hf_id,
+        "--dataset-name",
+        "custom",
+        "--dataset-path",
+        str(dataset_path),
+        "--num-prompts",
+        str(num_prompts),
+        "--max-concurrency",
+        str(max_concurrency),
+        "--port",
+        str(port),
+        "--host",
+        host,
+        "--seed",
+        str(seed),
+        "--custom-output-len",
+        str(output_tokens),
+        "--percentile-metrics",
+        "ttft,tpot,itl,e2el",
+        "--metric-percentiles",
+        "50,95,99",
     ]
-    # Warm up at least as many requests as the concurrency so CUDA-graph capture
-    # for the run's batch shape happens during warmup, not in the measured run
-    # (otherwise the first batch pays the capture cost and inflates p95/p99).
+
     effective_warmups = num_warmups
     if reproducible:
         effective_warmups = max(num_warmups, max_concurrency)
@@ -846,19 +876,21 @@ def run_bench_serve(
 
     profiles = _bench_serve_profiles(hf_id)
     if reproducible:
-        profiles = profiles[:1]  # pin one profile; do not vary endpoint per device
+        profiles = profiles[:1]
 
     last_result: dict[str, Any] = {"stdout": "", "stderr": "", "returncode": -1}
     for profile in profiles:
         bench_args = [
-            "--backend", profile["backend"],
-            "--endpoint", profile["endpoint"],
+            "--backend",
+            profile["backend"],
+            "--endpoint",
+            profile["endpoint"],
             *common_args,
         ]
         if profile["skip_template"]:
             bench_args.append("--custom-skip-chat-template")
         commands = _build_vllm_bench_commands("serve", bench_args)
-        last_result = _run_command_attempts(commands, timeout=7200)
+        last_result = _run_command_attempts(commands, timeout=timeout)
         last_result["bench_profile"] = profile["label"]
         if last_result.get("returncode") == 0:
             break
@@ -889,12 +921,11 @@ def run_bench_serve(
 
     if reproducible:
         logger.error(
-            "Reproducible mode: `vllm bench serve` failed and HTTP fallback is "
-            "disabled (strict). Recording failure."
+            "Reproducible mode: `vllm bench serve` failed and HTTP fallback is disabled (strict)."
         )
         return {"success": False, "metrics": metrics, "raw": last_result}
 
-    logger.warning("vllm bench serve failed; using HTTP fallback")
+    logger.warning("vllm bench serve failed; invoking HTTP fallback")
     http_out = run_bench_serve_http(
         hf_id=hf_id,
         dataset_path=dataset_path,
@@ -903,6 +934,7 @@ def run_bench_serve(
         host=host,
         port=port,
         output_tokens=output_tokens,
+        timeout=timeout,
     )
     http_out["raw"] = {**last_result, "http_fallback": http_out.get("raw", {})}
     if http_out.get("success"):
@@ -924,32 +956,44 @@ def run_bench_throughput_offline(
     seed: int,
     enforce_eager: bool,
     monitor: GPUMonitor | None = None,
+    timeout: int = DEFAULT_SUBPROCESS_TIMEOUT_SEC,
 ) -> dict[str, Any]:
+    """Execute offline throughput benchmark using vllm bench throughput."""
     bench_args = [
-        "--model", hf_id,
-        "--dataset-name", "random",
-        "--random-input-len", str(prompt_tokens),
-        "--random-output-len", str(output_tokens),
-        "--num-prompts", str(num_prompts),
-        "--dtype", dtype,
-        "--max-model-len", str(max_model_len),
-        "--tensor-parallel-size", str(tensor_parallel_size),
-        "--gpu-memory-utilization", str(gpu_memory_utilization),
-        "--seed", str(seed),
+        "--model",
+        hf_id,
+        "--dataset-name",
+        "random",
+        "--random-input-len",
+        str(prompt_tokens),
+        "--random-output-len",
+        str(output_tokens),
+        "--num-prompts",
+        str(num_prompts),
+        "--dtype",
+        dtype,
+        "--max-model-len",
+        str(max_model_len),
+        "--tensor-parallel-size",
+        str(tensor_parallel_size),
+        "--gpu-memory-utilization",
+        str(gpu_memory_utilization),
+        "--seed",
+        str(seed),
     ]
     if trust_remote_code:
         bench_args.append("--trust-remote-code")
     if enforce_eager:
         bench_args.append("--enforce-eager")
     if quantization:
-        bench_args.extend(["--quantization", quantization])
+        bench_args.extend(["--quantization", quantization.lower()])
 
     if monitor:
         monitor.start()
 
     last_result = _run_command_attempts(
         _build_vllm_bench_commands("throughput", bench_args),
-        timeout=7200,
+        timeout=timeout,
     )
 
     samples = monitor.stop() if monitor else []
@@ -984,6 +1028,7 @@ def run_online_benchmark(
     seed: int,
     monitor: GPUMonitor,
 ) -> dict[str, Any]:
+    """Orchestrate the full serving benchmark with active GPU monitoring."""
     ok, err = start_server(serve_cmd, log_path, startup_timeout_sec, host, port)
     if not ok:
         et, em = classify_error(err)
